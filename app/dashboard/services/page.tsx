@@ -1,18 +1,34 @@
-import { ClipboardList } from "lucide-react"
+import { createClient } from "@/lib/supabase/server"
+import { ServicesClient } from "./services-client"
 
-export default function ServicesPage() {
+export default async function ServicesPage() {
+  const supabase = await createClient()
+
+  const { data: records } = await supabase
+    .from("service_records")
+    .select("*, devices(serial_number, device_type, brand, model), pricing(service_name, price), technician:profiles!service_records_technician_id_fkey(full_name)")
+    .order("created_at", { ascending: false })
+
+  const { data: devices } = await supabase
+    .from("devices")
+    .select("id, serial_number, device_type, brand, model")
+    .order("serial_number")
+
+  const { data: pricingItems } = await supabase
+    .from("pricing")
+    .select("id, service_name, price, category_id")
+    .eq("is_active", true)
+    .order("service_name")
+
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: profile } = await supabase.from("profiles").select("role").eq("id", user!.id).single()
+
   return (
-    <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-        <ClipboardList className="h-8 w-8 text-muted-foreground" />
-      </div>
-      <h2 className="mt-6 text-xl font-semibold text-foreground">
-        Service Records
-      </h2>
-      <p className="mt-2 max-w-sm text-sm text-muted-foreground text-pretty">
-        Create and manage service records for device repairs. Track status, assign technicians, and log work performed.
-      </p>
-      <p className="mt-4 text-xs text-muted-foreground">Coming soon</p>
-    </div>
+    <ServicesClient
+      records={records ?? []}
+      devices={devices ?? []}
+      pricingItems={pricingItems ?? []}
+      isAdmin={profile?.role === "admin"}
+    />
   )
 }

@@ -1,18 +1,20 @@
-import { Users } from "lucide-react"
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
+import { UsersClient } from "./users-client"
 
-export default function UsersPage() {
-  return (
-    <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-        <Users className="h-8 w-8 text-muted-foreground" />
-      </div>
-      <h2 className="mt-6 text-xl font-semibold text-foreground">
-        User Management
-      </h2>
-      <p className="mt-2 max-w-sm text-sm text-muted-foreground text-pretty">
-        Manage team members, assign roles, and control access permissions. Admin only.
-      </p>
-      <p className="mt-4 text-xs text-muted-foreground">Coming soon</p>
-    </div>
-  )
+export default async function UsersPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: currentProfile } = await supabase.from("profiles").select("role").eq("id", user!.id).single()
+
+  if (currentProfile?.role !== "admin") {
+    redirect("/dashboard")
+  }
+
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("*")
+    .order("created_at", { ascending: false })
+
+  return <UsersClient profiles={profiles ?? []} currentUserId={user!.id} />
 }

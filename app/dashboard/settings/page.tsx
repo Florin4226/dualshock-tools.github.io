@@ -1,18 +1,32 @@
-import { Settings } from "lucide-react"
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
+import { SettingsClient } from "./settings-client"
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user!.id).single()
+
+  if (profile?.role !== "admin") {
+    redirect("/dashboard")
+  }
+
+  const [
+    { count: deviceCount },
+    { count: recordCount },
+    { count: categoryCount },
+    { count: userCount },
+  ] = await Promise.all([
+    supabase.from("devices").select("*", { count: "exact", head: true }),
+    supabase.from("service_records").select("*", { count: "exact", head: true }),
+    supabase.from("categories").select("*", { count: "exact", head: true }),
+    supabase.from("profiles").select("*", { count: "exact", head: true }),
+  ])
+
   return (
-    <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-        <Settings className="h-8 w-8 text-muted-foreground" />
-      </div>
-      <h2 className="mt-6 text-xl font-semibold text-foreground">
-        Platform Settings
-      </h2>
-      <p className="mt-2 max-w-sm text-sm text-muted-foreground text-pretty">
-        Configure platform settings, company details, notification preferences, and system defaults.
-      </p>
-      <p className="mt-4 text-xs text-muted-foreground">Coming soon</p>
-    </div>
+    <SettingsClient
+      stats={{ devices: deviceCount ?? 0, records: recordCount ?? 0, categories: categoryCount ?? 0, users: userCount ?? 0 }}
+      profile={profile}
+    />
   )
 }

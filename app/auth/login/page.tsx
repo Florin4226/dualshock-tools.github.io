@@ -1,4 +1,3 @@
-import Link from "next/link"
 import { login } from "../actions"
 import { AuthForm } from "@/components/auth/auth-form"
 
@@ -46,13 +45,7 @@ export default async function LoginPage({
         <AuthForm action={login} buttonText="Sign in" />
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
-          {"Don't have an account? "}
-          <Link
-            href="/auth/sign-up"
-            className="font-medium text-primary hover:underline"
-          >
-            Sign up
-          </Link>
+          Contact your administrator to get an account.
         </p>
       </div>
     </div>
