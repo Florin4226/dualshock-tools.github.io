@@ -62,14 +62,16 @@ export async function deleteDevice(id: string) {
   return { success: true }
 }
 
-// ── Categories ──
+// ── Categories (any authenticated user) ──
 
 export async function createCategory(formData: FormData) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
+  const parentId = formData.get("parent_id") as string
   const { error } = await supabase.from("categories").insert({
     name: formData.get("name") as string,
     description: (formData.get("description") as string) || null,
     device_type: formData.get("device_type") as string,
+    parent_id: parentId || null,
   })
   if (error) return { error: error.message }
   revalidatePath("/dashboard/categories")
@@ -78,11 +80,13 @@ export async function createCategory(formData: FormData) {
 }
 
 export async function updateCategory(id: string, formData: FormData) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
+  const parentId = formData.get("parent_id") as string
   const { error } = await supabase.from("categories").update({
     name: formData.get("name") as string,
     description: (formData.get("description") as string) || null,
     device_type: formData.get("device_type") as string,
+    parent_id: parentId || null,
     is_active: formData.get("is_active") === "true",
     updated_at: new Date().toISOString(),
   }).eq("id", id)
@@ -92,7 +96,7 @@ export async function updateCategory(id: string, formData: FormData) {
 }
 
 export async function deleteCategory(id: string) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
   const { error } = await supabase.from("categories").delete().eq("id", id)
   if (error) return { error: error.message }
   revalidatePath("/dashboard/categories")
@@ -100,10 +104,10 @@ export async function deleteCategory(id: string) {
   return { success: true }
 }
 
-// ── Pricing ──
+// ── Pricing (any authenticated user) ──
 
 export async function createPricing(formData: FormData) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
   const { error } = await supabase.from("pricing").insert({
     category_id: formData.get("category_id") as string,
     service_name: formData.get("service_name") as string,
@@ -119,7 +123,7 @@ export async function createPricing(formData: FormData) {
 }
 
 export async function updatePricing(id: string, formData: FormData) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
   const { error } = await supabase.from("pricing").update({
     category_id: formData.get("category_id") as string,
     service_name: formData.get("service_name") as string,
@@ -135,7 +139,7 @@ export async function updatePricing(id: string, formData: FormData) {
 }
 
 export async function deletePricing(id: string) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requireAuth()
   const { error } = await supabase.from("pricing").delete().eq("id", id)
   if (error) return { error: error.message }
   revalidatePath("/dashboard/pricing")
@@ -211,7 +215,6 @@ export async function inviteUser(formData: FormData) {
   const headersList = await headers()
   const origin = headersList.get("origin") || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
 
-  // Admin creates account on behalf of user
   const { error } = await supabase.auth.signUp({
     email,
     password,

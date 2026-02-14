@@ -24,8 +24,10 @@ export interface Category {
   description: string | null
   device_type: "playstation_controller" | "other_controller" | "console" | "all"
   is_active: boolean
+  parent_id: string | null
   created_at: string
   updated_at: string
+  subcategories?: Category[]
 }
 
 export interface PricingItem {
