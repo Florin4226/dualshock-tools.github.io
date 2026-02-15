@@ -7,7 +7,7 @@ import {
   Usb, ArrowLeft, Battery, BatteryCharging, Info, Crosshair,
   Maximize, Save, RotateCcw, ChevronDown, ChevronUp, Copy, Check,
   AlertTriangle, Gamepad2, Plus, Play, Square as SquareIcon, Download, Clock,
-  Volume2, VolumeX, Lightbulb, Headphones, Mic, Vibrate, Zap, SlidersHorizontal,
+  Volume2, Lightbulb, Headphones, Mic, Vibrate, Zap, SlidersHorizontal,
 } from "lucide-react"
 import { StickCanvas } from "@/components/controller/stick-canvas"
 import { DualSenseSVG, DualSenseEdgeSVG, DualShock4SVG } from "@/components/controller/controller-svg"
@@ -342,13 +342,53 @@ export default function ControllerTestPage() {
   function resetTestResult(key: string) { setTestResults(p => { const n = { ...p }; delete n[key]; return n }) }
 
   /* ── Quick Test ── */
-  function startQuickTest(type: "entry" | "exit") {
+  async function startQuickTest(type: "entry" | "exit") {
     llRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0); rrRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0)
     setCircLeft([]); setCircRight([]); everPressedRef.current = new Set()
     centerRef.current = { lx: [], ly: [], rx: [], ry: [] }
     setStickMode("circularity"); setQtActive(true); setQtType(type); setQtSeconds(0); setQtSaved(false)
-    addLog(`Quick Test (${type}) started`)
+    addLog(`Quick Test (${type}) started - running hardware tests...`)
     qtTimerRef.current = setInterval(() => setQtSeconds(p => p + 1), 1000)
+
+    // Auto-run all available hardware tests in sequence
+    if (controller) {
+      setTestResults(p => ({ ...p, usb: true }))
+      const tests = controller.getSupportedTests()
+      // Haptic
+      if (tests.includes("haptic")) {
+        try { await controller.setVibration(180, 80); await sleep(400); await controller.setVibration(0, 180); await sleep(400); await controller.setVibration(0, 0); setTestResults(p => ({ ...p, haptic: true })); addLog("QT: Haptic OK") }
+        catch { setTestResults(p => ({ ...p, haptic: false })); addLog("QT: Haptic failed") }
+      }
+      // Lights
+      if (tests.includes("lights")) {
+        try { await controller.setLightbarColor(255, 0, 0); await sleep(400); await controller.setLightbarColor(0, 255, 0); await sleep(400); await controller.setLightbarColor(0, 0, 255); await sleep(400); await controller.setLightbarColor(0, 0, 0)
+          try { await controller.setPlayerIndicator(0x1f); await sleep(500); await controller.setPlayerIndicator(0) } catch { /* */ }
+          try { await controller.setMuteLed(2); await sleep(500); await controller.setMuteLed(0) } catch { /* */ }
+          setTestResults(p => ({ ...p, lights: true })); addLog("QT: Lights OK")
+        } catch { setTestResults(p => ({ ...p, lights: false })); addLog("QT: Lights failed") }
+      }
+      // Adaptive Triggers (DS5 only)
+      if (tests.includes("adaptive_triggers")) {
+        try { await controller.setAdaptiveTrigger({ mode: "resistance", start: 0, end: 120, force: 200 }, { mode: "resistance", start: 0, end: 120, force: 200 }); addLog("QT: Adaptive triggers ON - press L2/R2"); await sleep(3000); await controller.setAdaptiveTrigger({ mode: "off", start: 0, end: 0, force: 0 }, { mode: "off", start: 0, end: 0, force: 0 }); setTestResults(p => ({ ...p, adaptive: true })); addLog("QT: Adaptive OK") }
+        catch { setTestResults(p => ({ ...p, adaptive: false })); addLog("QT: Adaptive failed") }
+      }
+      // Speaker
+      if (tests.includes("speaker")) {
+        try { await controller.setSpeakerTone("speaker"); await sleep(1500); await controller.resetSpeakerSettings(); setTestResults(p => ({ ...p, speaker: true })); addLog("QT: Speaker OK") }
+        catch { setTestResults(p => ({ ...p, speaker: false })); addLog("QT: Speaker failed") }
+      }
+      // Headphone
+      if (tests.includes("headphone")) {
+        try { await controller.setSpeakerTone("headphones"); await sleep(1500); await controller.resetSpeakerSettings(); setTestResults(p => ({ ...p, headphone: true })); addLog("QT: Headphone OK") }
+        catch { setTestResults(p => ({ ...p, headphone: false })); addLog("QT: Headphone failed") }
+      }
+      // Microphone (mute LED cycle)
+      if (tests.includes("microphone")) {
+        try { await controller.setMuteLed(1); await sleep(700); await controller.setMuteLed(2); await sleep(700); await controller.setMuteLed(0); setTestResults(p => ({ ...p, microphone: true })); addLog("QT: Mic LED OK") }
+        catch { setTestResults(p => ({ ...p, microphone: false })); addLog("QT: Mic failed") }
+      }
+      addLog("QT: All hardware tests done. Now rotate sticks and press all buttons.")
+    }
   }
 
   function stopQuickTest() {
@@ -400,6 +440,7 @@ export default function ControllerTestPage() {
       for (let i = 0; i < 5; i++) { await sleep(500); const s = await controller.calibrateSticksSample(); if (!s.ok) throw s.error; setCalibProgress(30 + ((i + 1) / 5) * 50); setCalibMsg(`Sampling ${i + 1}/5`) }
       const e = await controller.calibrateSticksEnd(); if (!e.ok) throw e.error
       setCalibStep("center-done"); setCalibProgress(100); setCalibMsg("Center done! Save to flash."); setHasChanges(true); addLog("Center calibration done")
+      try { const nv = await controller.queryNvStatus(); setNvStatus(nv) } catch { /* */ }
     } catch (err) { setCalibStep("idle"); setCalibMsg(""); setError(String(err)); addLog(`Center error: ${err}`) }
   }
 
@@ -412,20 +453,48 @@ export default function ControllerTestPage() {
 
   async function handleRangeEnd() {
     if (!controller) return
-    try { const r = await controller.calibrateRangeEnd(); setCalibStep("range-done"); setCalibProgress(100); setCalibMsg("Range done! Save to flash."); setHasChanges(true); addLog("Range done") }
+    try { const r = await controller.calibrateRangeEnd(); setCalibStep("range-done"); setCalibProgress(100); setCalibMsg("Range done! Save to flash."); setHasChanges(true); addLog("Range done"); try { const nv = await controller.queryNvStatus(); setNvStatus(nv) } catch { /* */ } }
     catch (err) { setCalibStep("idle"); setCalibMsg(""); setError(String(err)) }
   }
 
   async function handleSave() {
     if (!controller) return; setSaving(true)
-    try { const r = await controller.flash(); addLog(r.message); setHasChanges(false); setCalibStep("idle"); setCalibMsg("Saved!") }
-    catch (err) { setError(String(err)) }
+    try {
+      const r = await controller.flash()
+      addLog(r.message); setHasChanges(false); setCalibStep("idle"); setCalibMsg("Saved!")
+      // Refresh NVS status after save
+      try { const nv = await controller.queryNvStatus(); setNvStatus(nv); addLog(`NVS: ${nv.status}`) } catch { /* */ }
+    } catch (err) { setError(String(err)); addLog(`Save error: ${err}`) }
     finally { setSaving(false) }
   }
 
   async function handleReset() {
     if (!controller) return
-    try { await controller.reset(); addLog("Reset. Reconnect."); await handleDisconnect() } catch { /* */ }
+    try { await controller.reset(); addLog("Reset sent. Reconnect controller."); await handleDisconnect() } catch { /* */ }
+  }
+
+  async function handleNvsRefresh() {
+    if (!controller) return
+    try { const nv = await controller.queryNvStatus(); setNvStatus(nv); addLog(`NVS query: ${nv.status} (code: ${nv.code})`) }
+    catch (e) { addLog(`NVS query error: ${e}`) }
+  }
+
+  async function handleNvsUnlock() {
+    if (!controller) return
+    try {
+      const r = await controller.nvsUnlock()
+      if (r.ok) { addLog("NVS unlocked"); await handleNvsRefresh() }
+      else { addLog(`NVS unlock failed: ${r.error?.message}`); setError(`NVS unlock failed: ${r.error?.message || "Unknown error"}`) }
+    } catch (e) { addLog(`NVS unlock error: ${e}`); setError(String(e)) }
+  }
+
+  async function handleNvsLock() {
+    if (!controller) return
+    try {
+      const r = await controller.nvsLock()
+      if (r.ok) { addLog("NVS locked"); await handleNvsRefresh() }
+      else { addLog(`NVS lock failed: ${r.error?.message}`); setError(`NVS lock failed: ${r.error?.message || "Unknown error"}`) }
+    } catch (e) { addLog(`NVS lock error: ${e}`); setError(String(e)) }
   }
 
   function handleCopy(key: string, value: string) { navigator.clipboard.writeText(value); setCopiedKey(key); setTimeout(() => setCopiedKey(null), 2000) }
@@ -480,7 +549,21 @@ export default function ControllerTestPage() {
               <div className="flex items-center gap-2"><Gamepad2 className="h-5 w-5 text-primary" /><span className="text-sm font-medium text-foreground">{deviceName}</span></div>
               {serialNumber && <div className="flex items-center gap-1.5"><span className="text-xs text-muted-foreground">SN:</span><span className="font-mono text-xs text-foreground">{serialNumber}</span><button onClick={() => handleCopy("serial", serialNumber)} className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground">{copiedKey === "serial" ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}</button></div>}
               {battery && <div className="flex items-center gap-1.5">{battery.is_charging ? <BatteryCharging className="h-4 w-4 text-green-500" /> : <Battery className="h-4 w-4 text-muted-foreground" />}<span className="text-xs text-muted-foreground">{battery.charge_level}%</span><span className="text-xs text-muted-foreground">({battery.cable_connected ? "USB" : "Battery"})</span></div>}
-              {nvStatus && <div className="flex items-center gap-1.5"><span className="text-xs text-muted-foreground">NVS:</span><span className={cn("text-xs font-medium", nvStatus.status === "locked" ? "text-green-500" : nvStatus.status === "unlocked" ? "text-yellow-500" : "text-muted-foreground")}>{nvStatus.status}</span></div>}
+              {nvStatus && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">NVS:</span>
+                  <span className={cn("text-xs font-medium",
+                    nvStatus.status === "locked" ? "text-green-500" :
+                    nvStatus.status === "unlocked" ? "text-yellow-500" :
+                    nvStatus.status === "pending_reboot" ? "text-orange-500" :
+                    nvStatus.status === "error" ? "text-destructive" :
+                    "text-muted-foreground"
+                  )}>{nvStatus.status}{nvStatus.code !== undefined ? ` (${nvStatus.code})` : ""}</span>
+                  <button onClick={handleNvsRefresh} className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground" title="Refresh NVS"><RotateCcw className="h-3 w-3" /></button>
+                  {nvStatus.locked === true && <button onClick={handleNvsUnlock} className="h-5 rounded px-1.5 text-[10px] bg-yellow-500/10 text-yellow-600 border border-yellow-500/30 hover:bg-yellow-500/20" title="Unlock NVS for writing">Unlock</button>}
+                  {nvStatus.locked === false && <button onClick={handleNvsLock} className="h-5 rounded px-1.5 text-[10px] bg-green-500/10 text-green-600 border border-green-500/30 hover:bg-green-500/20" title="Lock NVS (save)">Lock</button>}
+                </div>
+              )}
               {hasChanges && <span className="inline-flex rounded-full bg-yellow-500/10 px-2.5 py-0.5 text-xs font-medium text-yellow-500 border border-yellow-500/30">Unsaved</span>}
             </div>
           </div>
@@ -563,7 +646,7 @@ export default function ControllerTestPage() {
 
             {qtActive ? (
               <div className="space-y-4">
-                <div className="rounded-md bg-primary/5 border border-primary/20 p-3"><p className="text-sm text-foreground font-medium">Quick Test ({qtType === "entry" ? "ENTRY" : "EXIT"}) in progress...</p><p className="text-xs text-muted-foreground mt-1">Rotate sticks fully, press all buttons. Stop when done.</p></div>
+                <div className="rounded-md bg-primary/5 border border-primary/20 p-3"><p className="text-sm text-foreground font-medium">Quick Test ({qtType === "entry" ? "ENTRY" : "EXIT"}) in progress...</p><p className="text-xs text-muted-foreground mt-1">Hardware tests run automatically. Rotate both sticks in full circles and press all buttons. Stop when done.</p></div>
                 <div className="flex items-center justify-center gap-6">
                   <StickCanvas x={sticks.lx} y={sticks.ly} label="Left" circularityData={circLeft} size={180} />
                   <StickCanvas x={sticks.rx} y={sticks.ry} label="Right" circularityData={circRight} size={180} />
