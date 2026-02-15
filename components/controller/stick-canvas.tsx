@@ -60,8 +60,10 @@ export function StickCanvas({ x, y, label, circularityData, size = 200, zoomCent
         if (d0 === undefined || d1 === undefined) continue
         if (d0 <= 0 && d1 <= 0) continue
 
-        const a0 = (i / N) * Math.PI * 2
-        const a1 = (((i + 1) % N) / N) * Math.PI * 2
+        // Data is stored via atan2 mapped to 0..N with (angle+PI)/(2*PI)*N
+        // So sector i corresponds to angle: i/N * 2*PI - PI
+        const a0 = (i / N) * Math.PI * 2 - Math.PI
+        const a1 = (((i + 1) % N) / N) * Math.PI * 2 - Math.PI
 
         // Pixel positions on the circle edge, scaled by the measured distance
         const px0 = cx + Math.cos(a0) * d0 * R

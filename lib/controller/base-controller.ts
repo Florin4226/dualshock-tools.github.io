@@ -5,11 +5,13 @@ export class BaseController {
   device: HIDDevice
   model: string
   finetuneMaxValue: number
+  currentOutputState: Record<string, number>
 
   constructor(device: HIDDevice) {
     this.device = device
     this.model = "undefined"
     this.finetuneMaxValue = 0
+    this.currentOutputState = {}
   }
 
   getModel(): string { return this.model }
@@ -36,61 +38,35 @@ export class BaseController {
     if (this.device?.opened) await this.device.close()
   }
 
-  async getSerialNumber(): Promise<string> {
-    throw new Error("getSerialNumber() must be implemented by subclass")
-  }
-
-  async getInfo(): Promise<ControllerInfo> {
-    throw new Error("getInfo() must be implemented by subclass")
-  }
-
-  async flash(): Promise<{ success: boolean; message: string }> {
-    throw new Error("flash() must be implemented by subclass")
-  }
-
-  async reset(): Promise<void> {
-    throw new Error("reset() must be implemented by subclass")
-  }
-
-  async nvsLock(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("nvsLock() must be implemented by subclass")
-  }
-
-  async nvsUnlock(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("nvsUnlock() must be implemented by subclass")
-  }
-
-  async calibrateSticksBegin(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  async calibrateSticksSample(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  async calibrateSticksEnd(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  async calibrateRangeBegin(): Promise<{ ok: boolean; error?: Error }> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  async calibrateRangeEnd(): Promise<{ ok: boolean; error?: Error; code?: number }> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  async queryNvStatus(): Promise<NvStatus> {
-    throw new Error("must be implemented by subclass")
-  }
-
-  parseBatteryStatus(_data: DataView): BatteryStatus {
-    throw new Error("must be implemented by subclass")
-  }
-
-  parseInput(data: DataView): { sticks: StickData; buttons: Record<string, boolean>; battery: BatteryStatus } {
-    throw new Error("must be implemented by subclass")
-  }
-
+  // Abstract methods
+  async getSerialNumber(): Promise<string> { throw new Error("not implemented") }
+  async getInfo(): Promise<ControllerInfo> { throw new Error("not implemented") }
+  async flash(): Promise<{ success: boolean; message: string }> { throw new Error("not implemented") }
+  async reset(): Promise<void> { throw new Error("not implemented") }
+  async nvsLock(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async nvsUnlock(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async calibrateSticksBegin(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async calibrateSticksSample(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async calibrateSticksEnd(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async calibrateRangeBegin(): Promise<{ ok: boolean; error?: Error }> { throw new Error("not implemented") }
+  async calibrateRangeEnd(): Promise<{ ok: boolean; error?: Error; code?: number }> { throw new Error("not implemented") }
+  async queryNvStatus(): Promise<NvStatus> { throw new Error("not implemented") }
+  parseBatteryStatus(_data: DataView): BatteryStatus { throw new Error("not implemented") }
+  parseInput(data: DataView): { sticks: StickData; buttons: Record<string, boolean>; battery: BatteryStatus; l2Analog: number; r2Analog: number } { throw new Error("not implemented") }
   getNumberOfSticks(): number { return 2 }
+
+  // Output methods with default no-op implementations
+  async setVibration(_heavyLeft: number, _lightRight: number): Promise<void> {}
+  async setAdaptiveTrigger(_left: { mode: string; start: number; end: number; force: number }, _right: { mode: string; start: number; end: number; force: number }): Promise<void> {}
+  async setLightbarColor(_r: number, _g: number, _b: number): Promise<void> {}
+  async setPlayerIndicator(_pattern: number): Promise<void> {}
+  async setMuteLed(_state: number): Promise<void> {}
+  async setSpeakerTone(_output: string): Promise<void> {}
+  async resetSpeakerSettings(): Promise<void> {}
+  async resetLights(): Promise<void> {}
+  async initializeOutputState(): Promise<void> {}
+
+  getSupportedTests(): string[] {
+    return ["usb", "buttons", "sticks"]
+  }
 }
