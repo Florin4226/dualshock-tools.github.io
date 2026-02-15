@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Plus, Search, Pencil, Trash2, ClipboardList, ChevronDown, FileText, Receipt } from "lucide-react"
+import { Plus, Search, Pencil, Trash2, ClipboardList, ChevronDown, FileText, Receipt, Copy, Check } from "lucide-react"
 import { Modal } from "@/components/ui/modal"
 import { createServiceRecord, updateServiceRecord, deleteServiceRecord } from "../actions"
 import { STATUS_LABELS, STATUS_COLORS, DEVICE_TYPE_LABELS } from "@/lib/types"
@@ -27,6 +27,7 @@ interface RecordRow {
   devices: { serial_number: string; device_type: string; brand: string | null; model: string | null } | null
   pricing: { service_name: string; price: number } | null
   technician: { full_name: string } | null
+  quick_test_data: Record<string, unknown> | null
 }
 
 interface DeviceOption { id: string; serial_number: string; device_type: string; brand: string | null; model: string | null }
@@ -245,6 +246,13 @@ export function ServicesClient({
   const [error, setError] = useState("")
   const [selectedPricing, setSelectedPricing] = useState<string>("")
   const [pdfBusy, setPdfBusy] = useState<string | null>(null)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  function copyRecordId(id: string) {
+    navigator.clipboard.writeText(id)
+    setCopiedId(id)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
 
   const filtered = records.filter((r) => {
     const matchesStatus = statusFilter === "all" || r.status === statusFilter
@@ -347,11 +355,23 @@ export function ServicesClient({
               {/* Header row */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
                 <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1">
+                    <span className="font-mono text-[10px] text-muted-foreground">ID:</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{record.id.slice(0, 8)}</span>
+                    <button onClick={() => copyRecordId(record.id)} className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground" title="Copy full ID for Quick Test">
+                      {copiedId === record.id ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+                    </button>
+                  </div>
                   <span className="font-mono text-xs font-medium text-foreground">{record.devices?.serial_number ?? "Unknown"}</span>
                   <span className="text-xs text-muted-foreground">{DEVICE_TYPE_LABELS[record.devices?.device_type ?? ""]}</span>
                   <span className={cn("inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium", STATUS_COLORS[record.status])}>
                     {STATUS_LABELS[record.status]}
                   </span>
+                  {record.quick_test_data && (
+                    <span className="inline-flex rounded-full bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-600 border border-purple-500/20">
+                      QT
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => handleReport(record)} disabled={pdfBusy === record.id} className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50" title="Download Service Report">

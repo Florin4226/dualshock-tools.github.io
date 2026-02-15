@@ -6,7 +6,7 @@ export default async function ServicesPage() {
 
   const { data: records } = await supabase
     .from("service_records")
-    .select("id, device_id, pricing_id, status, customer_name, customer_phone, customer_email, diagnosis, work_performed, parts_used, total_price, currency, technician_id, started_at, completed_at, created_at, devices(serial_number, device_type, brand, model), pricing(service_name, price)")
+    .select("id, device_id, pricing_id, status, customer_name, customer_phone, customer_email, diagnosis, work_performed, parts_used, total_price, currency, technician_id, started_at, completed_at, created_at, quick_test_data, devices(serial_number, device_type, brand, model), pricing(service_name, price)")
     .order("created_at", { ascending: false })
 
   // Fetch technician names separately to avoid FK alias issues

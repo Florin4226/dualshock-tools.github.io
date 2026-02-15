@@ -203,6 +203,23 @@ export async function deleteServiceRecord(id: string) {
   return { success: true }
 }
 
+// ── Quick Test Data ──
+
+export async function saveQuickTestData(serviceRecordId: string, data: Record<string, unknown>) {
+  const { supabase } = await requireAuth()
+  const { data: existing } = await supabase.from("service_records").select("quick_test_data").eq("id", serviceRecordId).single()
+  const current = (existing?.quick_test_data as Record<string, unknown>) || {}
+  const merged = { ...current, ...data }
+  const { error } = await supabase.from("service_records").update({
+    quick_test_data: merged,
+    updated_at: new Date().toISOString(),
+  }).eq("id", serviceRecordId)
+  if (error) return { error: error.message }
+  revalidatePath("/dashboard/services")
+  revalidatePath("/dashboard/documents")
+  return { success: true }
+}
+
 // ── Users (Admin Only) ──
 
 export async function inviteUser(formData: FormData) {

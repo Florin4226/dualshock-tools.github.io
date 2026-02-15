@@ -6,16 +6,17 @@ import { useRouter } from "next/navigation"
 import {
   Usb, ArrowLeft, Battery, BatteryCharging, Info, Crosshair,
   Maximize, Save, RotateCcw, ChevronDown, ChevronUp, Copy, Check,
-  AlertTriangle, Gamepad2, Plus
+  AlertTriangle, Gamepad2, Plus, Play, Square, Download, Clock
 } from "lucide-react"
 import { StickCanvas } from "@/components/controller/stick-canvas"
 import { createControllerInstance, SUPPORTED_DEVICES, getDeviceName, getDeviceModel } from "@/lib/controller/controller-factory"
-import { sleep, CIRCULARITY_DATA_SIZE } from "@/lib/controller/utils"
+import { sleep, CIRCULARITY_DATA_SIZE, calculateCircularityError } from "@/lib/controller/utils"
 import type { BaseController } from "@/lib/controller/base-controller"
 import type { ControllerInfo, NvStatus, BatteryStatus, StickData, InfoItem } from "@/lib/controller/utils"
 import { cn } from "@/lib/utils"
+import { saveQuickTestData } from "../../actions"
 
-// PS button definitions: name -> SVG symbol/shape
+// PS button definitions
 const PS_BUTTON_GROUPS = {
   face: ["triangle", "circle", "cross", "square"],
   shoulder: ["l1", "r1", "l2", "r2"],
@@ -43,7 +44,33 @@ const PS_BUTTON_SYMBOLS: Record<string, string> = {
   l3: "L3", r3: "R3",
 }
 
+const ALL_BUTTONS = [
+  ...PS_BUTTON_GROUPS.face,
+  ...PS_BUTTON_GROUPS.shoulder,
+  ...PS_BUTTON_GROUPS.dpad,
+  ...PS_BUTTON_GROUPS.center,
+  ...PS_BUTTON_GROUPS.stick,
+]
+
 type CalibStep = "idle" | "center-begin" | "center-sampling" | "center-done" | "range-active" | "range-done"
+
+/* --- Quick Test snapshot type --- */
+interface QuickTestSnapshot {
+  timestamp: string
+  circularityLeft: number[]
+  circularityRight: number[]
+  circularityErrorLeft: number
+  circularityErrorRight: number
+  buttonsTestedCount: number
+  totalButtons: number
+  allButtonsOk: boolean
+  deviceName: string
+  serialNumber: string
+  stickCenterLX: number
+  stickCenterLY: number
+  stickCenterRX: number
+  stickCenterRY: number
+}
 
 /* --- PS-style button indicator --- */
 function PSButton({ name, active }: { name: string; active: boolean }) {
@@ -55,9 +82,7 @@ function PSButton({ name, active }: { name: string; active: boolean }) {
     return (
       <div className={cn(
         "flex h-10 w-10 items-center justify-center rounded-full border-2 text-base font-bold transition-all",
-        active
-          ? "scale-110 shadow-lg"
-          : "opacity-40"
+        active ? "scale-110 shadow-lg" : "opacity-40"
       )} style={{
         borderColor: faceColor,
         backgroundColor: active ? faceColor : "transparent",
@@ -68,7 +93,6 @@ function PSButton({ name, active }: { name: string; active: boolean }) {
     )
   }
 
-  // Shoulder / d-pad / center buttons
   const isDpad = ["up", "down", "left", "right"].includes(name)
   const isShoulder = ["l1", "r1", "l2", "r2"].includes(name)
 
@@ -106,6 +130,51 @@ function InfoRow({ item, copiedKey, onCopy }: { item: InfoItem; copiedKey: strin
   )
 }
 
+/* --- Quick Test Snapshot Comparison --- */
+function SnapshotCard({ snap, label, className }: { snap: QuickTestSnapshot; label: string; className?: string }) {
+  return (
+    <div className={cn("rounded-lg border p-4", className)}>
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-semibold text-foreground">{label}</h4>
+        <span className="text-[10px] text-muted-foreground font-mono">{new Date(snap.timestamp).toLocaleString("ro-RO")}</span>
+      </div>
+      <div className="flex items-center gap-3 mb-3">
+        <StickCanvas x={0} y={0} label="Left" circularityData={snap.circularityLeft} size={100} />
+        <StickCanvas x={0} y={0} label="Right" circularityData={snap.circularityRight} size={100} />
+      </div>
+      <div className="space-y-1.5 text-xs">
+        <div className="flex justify-between"><span className="text-muted-foreground">Circularity L</span><span className={cn("font-mono font-medium", snap.circularityErrorLeft < 5 ? "text-green-600" : snap.circularityErrorLeft < 15 ? "text-yellow-600" : "text-red-600")}>{snap.circularityErrorLeft.toFixed(1)}%</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Circularity R</span><span className={cn("font-mono font-medium", snap.circularityErrorRight < 5 ? "text-green-600" : snap.circularityErrorRight < 15 ? "text-yellow-600" : "text-red-600")}>{snap.circularityErrorRight.toFixed(1)}%</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Center LX/LY</span><span className="font-mono">{snap.stickCenterLX.toFixed(3)} / {snap.stickCenterLY.toFixed(3)}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Center RX/RY</span><span className="font-mono">{snap.stickCenterRX.toFixed(3)} / {snap.stickCenterRY.toFixed(3)}</span></div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Buttons</span><span className={cn("font-medium", snap.allButtonsOk ? "text-green-600" : "text-yellow-600")}>{snap.buttonsTestedCount}/{snap.totalButtons} {snap.allButtonsOk ? "OK" : "Incomplete"}</span></div>
+      </div>
+    </div>
+  )
+}
+
+function SnapshotComparison({ entry, exit }: { entry: QuickTestSnapshot; exit: QuickTestSnapshot }) {
+  const circLDiff = exit.circularityErrorLeft - entry.circularityErrorLeft
+  const circRDiff = exit.circularityErrorRight - entry.circularityErrorRight
+  return (
+    <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 mt-3">
+      <h4 className="text-sm font-semibold text-foreground mb-3">Comparison (Entry vs Exit)</h4>
+      <div className="space-y-1.5 text-xs">
+        <div className="flex justify-between"><span className="text-muted-foreground">Circularity L</span>
+          <span className={cn("font-mono font-medium", circLDiff < 0 ? "text-green-600" : circLDiff > 0 ? "text-red-600" : "text-muted-foreground")}>
+            {circLDiff > 0 ? "+" : ""}{circLDiff.toFixed(1)}% ({circLDiff < 0 ? "improved" : circLDiff > 0 ? "degraded" : "same"})
+          </span>
+        </div>
+        <div className="flex justify-between"><span className="text-muted-foreground">Circularity R</span>
+          <span className={cn("font-mono font-medium", circRDiff < 0 ? "text-green-600" : circRDiff > 0 ? "text-red-600" : "text-muted-foreground")}>
+            {circRDiff > 0 ? "+" : ""}{circRDiff.toFixed(1)}% ({circRDiff < 0 ? "improved" : circRDiff > 0 ? "degraded" : "same"})
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ============ Main Page ============ */
 export default function ControllerTestPage() {
   const router = useRouter()
@@ -136,8 +205,22 @@ export default function ControllerTestPage() {
   const rrDataRef = useRef<number[]>(new Array(CIRCULARITY_DATA_SIZE).fill(0))
   const [circLeft, setCircLeft] = useState<number[]>([])
   const [circRight, setCircRight] = useState<number[]>([])
-  const [zoomCenter, setZoomCenter] = useState(false)
   const [stickMode, setStickMode] = useState<"normal" | "zoom" | "circularity">("normal")
+
+  // Quick Test
+  const [quickTestActive, setQuickTestActive] = useState(false)
+  const [quickTestType, setQuickTestType] = useState<"entry" | "exit">("entry")
+  const [quickTestSeconds, setQuickTestSeconds] = useState(0)
+  const quickTestTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const everPressedRef = useRef<Set<string>>(new Set())
+  const [entrySnapshot, setEntrySnapshot] = useState<QuickTestSnapshot | null>(null)
+  const [exitSnapshot, setExitSnapshot] = useState<QuickTestSnapshot | null>(null)
+  const [quickTestServiceId, setQuickTestServiceId] = useState("")
+  const [savingQuickTest, setSavingQuickTest] = useState(false)
+  const [quickTestSaved, setQuickTestSaved] = useState(false)
+
+  // Center readings for quick test
+  const centerReadingsRef = useRef<{ lx: number[]; ly: number[]; rx: number[]; ry: number[] }>({ lx: [], ly: [], rx: [], ry: [] })
 
   const controllerRef = useRef<BaseController | null>(null)
 
@@ -150,8 +233,28 @@ export default function ControllerTestPage() {
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => { controllerRef.current?.close() }
+    return () => {
+      controllerRef.current?.close()
+      if (quickTestTimerRef.current) clearInterval(quickTestTimerRef.current)
+    }
   }, [])
+
+  // Track which buttons were ever pressed during quick test
+  useEffect(() => {
+    if (!quickTestActive) return
+    Object.entries(buttons).forEach(([k, v]) => {
+      if (v) everPressedRef.current.add(k)
+    })
+  }, [buttons, quickTestActive])
+
+  // Collect center readings during quick test (first 2 seconds)
+  useEffect(() => {
+    if (!quickTestActive || quickTestSeconds > 2) return
+    centerReadingsRef.current.lx.push(sticks.lx)
+    centerReadingsRef.current.ly.push(sticks.ly)
+    centerReadingsRef.current.rx.push(sticks.rx)
+    centerReadingsRef.current.ry.push(sticks.ry)
+  }, [quickTestActive, quickTestSeconds, sticks])
 
   // Input report handling -- 60fps via requestAnimationFrame
   useEffect(() => {
@@ -206,9 +309,9 @@ export default function ControllerTestPage() {
     setConnecting(true)
     setError("")
     try {
-      let devices = await (navigator as any).hid.getDevices()
+      let devices = await (navigator as Navigator & { hid: { getDevices(): Promise<HIDDevice[]>; requestDevice(opts: { filters: Array<{ vendorId: number; productId: number }> }): Promise<HIDDevice[]> } }).hid.getDevices()
       if (devices.length === 0) {
-        devices = await (navigator as any).hid.requestDevice({ filters: SUPPORTED_DEVICES })
+        devices = await (navigator as Navigator & { hid: { requestDevice(opts: { filters: Array<{ vendorId: number; productId: number }> }): Promise<HIDDevice[]> } }).hid.requestDevice({ filters: SUPPORTED_DEVICES })
       }
       if (devices.length === 0) { setConnecting(false); return }
       const device: HIDDevice = devices[0]
@@ -236,9 +339,10 @@ export default function ControllerTestPage() {
         addLog("Failed to get controller info")
         setError("Failed to read controller info. Device may not be genuine or not connected via USB.")
       }
-    } catch (err: any) {
-      setError(err.message || "Connection failed")
-      addLog(`Error: ${err.message}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Connection failed"
+      setError(msg)
+      addLog(`Error: ${msg}`)
     } finally {
       setConnecting(false)
     }
@@ -255,9 +359,8 @@ export default function ControllerTestPage() {
     addLog("Disconnected")
   }
 
-  /* ---- Add to Devices ---- */
+  /* ---- Add to Devices with serial number auto-fill ---- */
   function handleAddToDevices() {
-    const model = controller ? getDeviceModel(controller.device.productId) : ""
     const params = new URLSearchParams({
       add: "1",
       serial: serialNumber,
@@ -268,34 +371,117 @@ export default function ControllerTestPage() {
     router.push(`/dashboard/devices?${params.toString()}`)
   }
 
+  /* ---- Quick Test ---- */
+  function startQuickTest(type: "entry" | "exit") {
+    // Reset circularity data for fresh test
+    llDataRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0)
+    rrDataRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0)
+    setCircLeft([]); setCircRight([])
+    everPressedRef.current = new Set()
+    centerReadingsRef.current = { lx: [], ly: [], rx: [], ry: [] }
+    setStickMode("circularity")
+    setQuickTestActive(true)
+    setQuickTestType(type)
+    setQuickTestSeconds(0)
+    setQuickTestSaved(false)
+    addLog(`Quick Test (${type}) started. Rotate both sticks and press all buttons.`)
+
+    quickTestTimerRef.current = setInterval(() => {
+      setQuickTestSeconds(prev => prev + 1)
+    }, 1000)
+  }
+
+  function stopQuickTest() {
+    if (quickTestTimerRef.current) { clearInterval(quickTestTimerRef.current); quickTestTimerRef.current = null }
+    setQuickTestActive(false)
+
+    // Calculate averages for center readings
+    const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+    const centerLX = avg(centerReadingsRef.current.lx)
+    const centerLY = avg(centerReadingsRef.current.ly)
+    const centerRX = avg(centerReadingsRef.current.rx)
+    const centerRY = avg(centerReadingsRef.current.ry)
+
+    const snapshot: QuickTestSnapshot = {
+      timestamp: new Date().toISOString(),
+      circularityLeft: [...llDataRef.current],
+      circularityRight: [...rrDataRef.current],
+      circularityErrorLeft: calculateCircularityError(llDataRef.current),
+      circularityErrorRight: calculateCircularityError(rrDataRef.current),
+      buttonsTestedCount: everPressedRef.current.size,
+      totalButtons: ALL_BUTTONS.length,
+      allButtonsOk: everPressedRef.current.size >= ALL_BUTTONS.length - 2, // allow 2 missing (mute/touchpad)
+      deviceName,
+      serialNumber,
+      stickCenterLX: centerLX,
+      stickCenterLY: centerLY,
+      stickCenterRX: centerRX,
+      stickCenterRY: centerRY,
+    }
+
+    if (quickTestType === "entry") {
+      setEntrySnapshot(snapshot)
+      addLog(`Entry Quick Test complete. Circularity: L=${snapshot.circularityErrorLeft.toFixed(1)}% R=${snapshot.circularityErrorRight.toFixed(1)}%, Buttons: ${snapshot.buttonsTestedCount}/${snapshot.totalButtons}`)
+    } else {
+      setExitSnapshot(snapshot)
+      addLog(`Exit Quick Test complete. Circularity: L=${snapshot.circularityErrorLeft.toFixed(1)}% R=${snapshot.circularityErrorRight.toFixed(1)}%, Buttons: ${snapshot.buttonsTestedCount}/${snapshot.totalButtons}`)
+    }
+  }
+
+  async function handleSaveQuickTest() {
+    if (!quickTestServiceId.trim()) {
+      setError("Please enter a Service Record ID to save the Quick Test data.")
+      return
+    }
+    setSavingQuickTest(true)
+    try {
+      const data: Record<string, unknown> = {}
+      if (entrySnapshot) data.entry = entrySnapshot
+      if (exitSnapshot) data.exit = exitSnapshot
+      const result = await saveQuickTestData(quickTestServiceId, data)
+      if (result.error) {
+        setError(result.error)
+      } else {
+        setQuickTestSaved(true)
+        addLog(`Quick Test data saved to service record ${quickTestServiceId}`)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Save failed"
+      setError(msg)
+    } finally {
+      setSavingQuickTest(false)
+    }
+  }
+
   /* ---- Calibration ---- */
   async function handleCenterCalibration() {
     if (!controller) return
     setCalibStep("center-begin"); setCalibMsg("Starting center calibration..."); setCalibProgress(10)
     try {
       const res = await controller.calibrateSticksBegin()
-      if (!res.ok) throw res.error || new Error("Begin failed")
+      if (!res.ok) throw new Error(String(res.error || "Begin failed"))
       setCalibStep("center-sampling"); setCalibProgress(30)
       addLog("Center calibration started. Keep sticks centered!")
 
       for (let i = 0; i < 5; i++) {
         await sleep(500)
         const sr = await controller.calibrateSticksSample()
-        if (!sr.ok) throw sr.error || new Error("Sample failed")
+        if (!sr.ok) throw new Error(String(sr.error || "Sample failed"))
         setCalibProgress(30 + ((i + 1) / 5) * 50)
         setCalibMsg(`Sampling... (${i + 1}/5)`)
       }
 
       const er = await controller.calibrateSticksEnd()
-      if (!er.ok) throw er.error || new Error("End failed")
+      if (!er.ok) throw new Error(String(er.error || "End failed"))
       setCalibStep("center-done"); setCalibProgress(100)
       setCalibMsg("Center calibration complete! Save changes to flash.")
       setHasChanges(true)
       addLog("Center calibration complete")
-    } catch (err: any) {
+    } catch (err: unknown) {
       setCalibStep("idle"); setCalibMsg("")
-      setError(err.message || "Calibration failed")
-      addLog(`Center calibration error: ${err.message}`)
+      const msg = err instanceof Error ? err.message : "Calibration failed"
+      setError(msg)
+      addLog(`Center calibration error: ${msg}`)
     }
   }
 
@@ -304,12 +490,13 @@ export default function ControllerTestPage() {
     setCalibStep("range-active"); setCalibMsg("Range calibration active. Rotate both sticks fully!"); setCalibProgress(0)
     try {
       const res = await controller.calibrateRangeBegin()
-      if (!res.ok) throw res.error || new Error("Range begin failed")
+      if (!res.ok) throw new Error(String(res.error || "Range begin failed"))
       addLog("Range calibration started. Rotate both sticks in full circles!")
-    } catch (err: any) {
+    } catch (err: unknown) {
       setCalibStep("idle"); setCalibMsg("")
-      setError(err.message || "Range calibration failed to start")
-      addLog(`Range calibration error: ${err.message}`)
+      const msg = err instanceof Error ? err.message : "Range calibration failed to start"
+      setError(msg)
+      addLog(`Range calibration error: ${msg}`)
     }
   }
 
@@ -323,12 +510,13 @@ export default function ControllerTestPage() {
         setHasChanges(true)
         addLog("Range calibration complete")
       } else {
-        throw res.error || new Error("Range end failed")
+        throw new Error(String(res.error || "Range end failed"))
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setCalibStep("idle"); setCalibMsg("")
-      setError(err.message || "Range calibration failed")
-      addLog(`Range end error: ${err.message}`)
+      const msg = err instanceof Error ? err.message : "Range calibration failed"
+      setError(msg)
+      addLog(`Range end error: ${msg}`)
     }
   }
 
@@ -339,9 +527,10 @@ export default function ControllerTestPage() {
       const res = await controller.flash()
       addLog(res.message)
       setHasChanges(false); setCalibStep("idle"); setCalibMsg("Saved!")
-    } catch (err: any) {
-      setError(err.message || "Save failed")
-      addLog(`Save error: ${err.message}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Save failed"
+      setError(msg)
+      addLog(`Save error: ${msg}`)
     } finally { setSaving(false) }
   }
 
@@ -351,7 +540,7 @@ export default function ControllerTestPage() {
       await controller.reset()
       addLog("Controller reset. Reconnect.")
       await handleDisconnect()
-    } catch (err: any) { addLog(`Reset error: ${err.message}`) }
+    } catch (err: unknown) { addLog(`Reset error: ${err instanceof Error ? err.message : "Unknown"}`) }
   }
 
   function handleCopy(key: string, value: string) {
@@ -384,9 +573,9 @@ export default function ControllerTestPage() {
     )
   }
 
-  const hwItems = info?.infoItems?.filter(i => i.cat === "hw" && !i.isExtra) || []
-  const fwItems = info?.infoItems?.filter(i => i.cat === "fw" && !i.isExtra) || []
-  const extraItems = info?.infoItems?.filter(i => i.isExtra) || []
+  const hwItems = info?.infoItems?.filter((i: InfoItem) => i.cat === "hw" && !i.isExtra) || []
+  const fwItems = info?.infoItems?.filter((i: InfoItem) => i.cat === "fw" && !i.isExtra) || []
+  const extraItems = info?.infoItems?.filter((i: InfoItem) => i.isExtra) || []
   const model = controller ? getDeviceModel(controller.device.productId) : ""
   const isDS5 = model === "DS5" || model === "DS5_Edge"
   const useZoom = stickMode === "zoom"
@@ -431,7 +620,7 @@ export default function ControllerTestPage() {
         <div className="rounded-md bg-destructive/10 border border-destructive/30 p-3 text-sm text-destructive flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
           <span>{error}</span>
-          <button onClick={() => setError("")} className="ml-auto text-destructive/60 hover:text-destructive">x</button>
+          <button onClick={() => setError("")} className="ml-auto text-destructive/60 hover:text-destructive">{"x"}</button>
         </div>
       )}
 
@@ -491,20 +680,118 @@ export default function ControllerTestPage() {
             </div>
           </div>
 
+          {/* ========== QUICK TEST ========== */}
+          <div className="rounded-lg border-2 border-primary/30 bg-card p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Play className="h-5 w-5 text-primary" />
+                <h3 className="text-sm font-semibold text-foreground">Quick Test</h3>
+                <span className="text-xs text-muted-foreground">(entry / exit service record)</span>
+              </div>
+              {quickTestActive && (
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-primary animate-pulse" />
+                  <span className="text-sm font-mono text-foreground">{quickTestSeconds}s</span>
+                  <span className="text-xs text-muted-foreground">
+                    Buttons: {everPressedRef.current.size}/{ALL_BUTTONS.length}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {quickTestActive ? (
+              <div className="space-y-4">
+                <div className="rounded-md bg-primary/5 border border-primary/20 p-3">
+                  <p className="text-sm text-foreground font-medium">
+                    Quick Test ({quickTestType === "entry" ? "ENTRY" : "EXIT"}) in progress...
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Rotate both sticks in full circles, then press all buttons. Click &quot;Stop&quot; when done.
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-6">
+                  <StickCanvas x={sticks.lx} y={sticks.ly} label="Left Stick" circularityData={circLeft} size={180} />
+                  <StickCanvas x={sticks.rx} y={sticks.ry} label="Right Stick" circularityData={circRight} size={180} />
+                </div>
+                <button onClick={stopQuickTest}
+                  className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-destructive text-sm font-medium text-destructive-foreground hover:bg-destructive/90">
+                  <Square className="h-4 w-4" /> Stop Quick Test
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => startQuickTest("entry")} disabled={!controller}
+                    className="flex h-9 items-center gap-2 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                    <Play className="h-3.5 w-3.5" /> Entry Test
+                  </button>
+                  <button onClick={() => startQuickTest("exit")} disabled={!controller}
+                    className="flex h-9 items-center gap-2 rounded-md bg-green-600 px-4 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50">
+                    <Play className="h-3.5 w-3.5" /> Exit Test
+                  </button>
+                </div>
+
+                {/* Show snapshots */}
+                {(entrySnapshot || exitSnapshot) && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {entrySnapshot && (
+                        <SnapshotCard snap={entrySnapshot} label="Entry (Before Service)" className="border-blue-500/30 bg-blue-50/50 dark:bg-blue-950/20" />
+                      )}
+                      {exitSnapshot && (
+                        <SnapshotCard snap={exitSnapshot} label="Exit (After Service)" className="border-green-500/30 bg-green-50/50 dark:bg-green-950/20" />
+                      )}
+                    </div>
+
+                    {entrySnapshot && exitSnapshot && (
+                      <SnapshotComparison entry={entrySnapshot} exit={exitSnapshot} />
+                    )}
+
+                    {/* Save to service record */}
+                    <div className="rounded-md border border-border p-4 space-y-3">
+                      <h4 className="text-sm font-medium text-foreground">Save Quick Test to Service Record</h4>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={quickTestServiceId}
+                          onChange={(e) => setQuickTestServiceId(e.target.value)}
+                          placeholder="Paste Service Record ID here"
+                          className="flex h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                        <button onClick={handleSaveQuickTest} disabled={savingQuickTest || quickTestSaved || (!entrySnapshot && !exitSnapshot)}
+                          className={cn(
+                            "flex h-9 items-center gap-2 rounded-md px-4 text-sm font-medium disabled:opacity-50",
+                            quickTestSaved
+                              ? "bg-green-600 text-white"
+                              : "bg-primary text-primary-foreground hover:bg-primary/90"
+                          )}>
+                          {quickTestSaved ? <><Check className="h-3.5 w-3.5" /> Saved</> : savingQuickTest ? "Saving..." : <><Download className="h-3.5 w-3.5" /> Save</>}
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Copy the Service Record ID from the Services page and paste it here. The entry/exit test results will be attached to that record.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Grid: Sticks | Buttons | Info */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
 
             {/* ---- Analog Sticks ---- */}
             <div className="rounded-lg border border-border bg-card p-4">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-medium text-foreground">Joystick Info</h3>
+                <h3 className="text-sm font-medium text-foreground">Analog Sticks</h3>
                 <div className="flex items-center gap-1">
                   {(["normal", "zoom", "circularity"] as const).map(m => (
                     <button key={m} onClick={() => { setStickMode(m); if (m === "circularity") resetCircularity() }}
                       className={cn("h-7 rounded px-2 text-[11px] border transition-colors",
                         stickMode === m ? "bg-primary/10 border-primary text-primary font-medium" : "border-border text-muted-foreground hover:text-foreground"
                       )}>
-                      {m === "normal" ? "Normal" : m === "zoom" ? "10x zoom" : "Circularity"}
+                      {m === "normal" ? "Normal" : m === "zoom" ? "10x Zoom" : "Circularity"}
                     </button>
                   ))}
                 </div>
@@ -512,16 +799,16 @@ export default function ControllerTestPage() {
               <div className="flex items-center justify-center gap-4">
                 <StickCanvas x={sticks.lx} y={sticks.ly} label="Left Stick"
                   circularityData={showCirc ? circLeft : undefined}
-                  zoomCenter={useZoom} />
+                  zoomCenter={useZoom} size={180} />
                 <StickCanvas x={sticks.rx} y={sticks.ry} label="Right Stick"
                   circularityData={showCirc ? circRight : undefined}
-                  zoomCenter={useZoom} />
+                  zoomCenter={useZoom} size={180} />
               </div>
               <div className="mt-3 grid grid-cols-4 gap-2 text-center">
-                <div className="text-[11px] text-muted-foreground">LX: <span className="font-mono">{sticks.lx.toFixed(2)}</span></div>
-                <div className="text-[11px] text-muted-foreground">LY: <span className="font-mono">{sticks.ly.toFixed(2)}</span></div>
-                <div className="text-[11px] text-muted-foreground">RX: <span className="font-mono">{sticks.rx.toFixed(2)}</span></div>
-                <div className="text-[11px] text-muted-foreground">RY: <span className="font-mono">{sticks.ry.toFixed(2)}</span></div>
+                <div className="text-[11px] text-muted-foreground">LX: <span className="font-mono">{sticks.lx.toFixed(3)}</span></div>
+                <div className="text-[11px] text-muted-foreground">LY: <span className="font-mono">{sticks.ly.toFixed(3)}</span></div>
+                <div className="text-[11px] text-muted-foreground">RX: <span className="font-mono">{sticks.rx.toFixed(3)}</span></div>
+                <div className="text-[11px] text-muted-foreground">RY: <span className="font-mono">{sticks.ry.toFixed(3)}</span></div>
               </div>
               {showCirc && (
                 <button onClick={resetCircularity}
@@ -597,13 +884,13 @@ export default function ControllerTestPage() {
               {hwItems.length > 0 && (
                 <div className="mb-2">
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Hardware</p>
-                  {hwItems.map(item => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
+                  {hwItems.map((item: InfoItem) => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
                 </div>
               )}
               {fwItems.length > 0 && (
                 <div className="mb-2">
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Firmware</p>
-                  {fwItems.map(item => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
+                  {fwItems.map((item: InfoItem) => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
                 </div>
               )}
               {extraItems.length > 0 && (
@@ -613,7 +900,7 @@ export default function ControllerTestPage() {
                     <span>{showExtra ? "Hide" : "Show"} {extraItems.length} extra fields</span>
                     {showExtra ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                   </button>
-                  {showExtra && extraItems.map(item => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
+                  {showExtra && extraItems.map((item: InfoItem) => <InfoRow key={item.key} item={item} copiedKey={copiedKey} onCopy={handleCopy} />)}
                 </>
               )}
             </div>
@@ -725,23 +1012,23 @@ function FineTunePanel({ controller, addLog, onChanges }: { controller: BaseCont
     if (!("getInMemoryModuleData" in controller)) return
     setLoading(true)
     try {
-      const data = await (controller as any).getInMemoryModuleData()
+      const data = await (controller as Record<string, unknown> & { getInMemoryModuleData: () => Promise<number[]> }).getInMemoryModuleData()
       setFinetuneData(data)
       addLog("Fine-tune data loaded")
-    } catch (err: any) { addLog(`Fine-tune load error: ${err.message}`) }
+    } catch (err: unknown) { addLog(`Fine-tune load error: ${err instanceof Error ? err.message : "Unknown"}`) }
     finally { setLoading(false) }
   }
 
   async function writeFinetuneData() {
     if (!finetuneData || !("writeFinetuneData" in controller)) return
     try {
-      await (controller as any).writeFinetuneData(finetuneData)
+      await (controller as Record<string, unknown> & { writeFinetuneData: (d: number[]) => Promise<void> }).writeFinetuneData(finetuneData)
       onChanges()
       addLog("Fine-tune data written to controller memory")
-    } catch (err: any) { addLog(`Fine-tune write error: ${err.message}`) }
+    } catch (err: unknown) { addLog(`Fine-tune write error: ${err instanceof Error ? err.message : "Unknown"}`) }
   }
 
-  const maxVal = (controller as any).finetuneMaxValue || 65535
+  const maxVal = (controller as Record<string, unknown>).finetuneMaxValue as number || 65535
   const labels = [
     "L-Left", "L-Top", "R-Left", "R-Top",
     "L-Right", "L-Bottom", "R-Right", "R-Bottom",

@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useEffect } from "react"
+import { useRef, useEffect, useCallback } from "react"
 import { CIRCULARITY_DATA_SIZE, calculateCircularityError } from "@/lib/controller/utils"
 
 interface StickCanvasProps {
@@ -12,172 +12,175 @@ interface StickCanvasProps {
   zoomCenter?: boolean
 }
 
-function applyCenterZoom(x: number, y: number): { x: number; y: number } {
-  const distance = Math.sqrt(x * x + y * y)
-  if (distance === 0) return { x, y }
-  const angle = Math.atan2(y, x)
-  const newDist = distance <= 0.05
-    ? (distance / 0.05) * 0.5
-    : 0.5 + ((distance - 0.05) / 0.95) * 0.5
-  return { x: Math.cos(angle) * newDist, y: Math.sin(angle) * newDist }
-}
-
-function ccToColor(cc: number): number {
-  const dd = Math.sqrt(Math.pow(1.0 - cc, 2))
-  if (cc <= 1.0) {
-    return 220 - 220 * Math.min(1.0, Math.max(0, (dd - 0.05)) / 0.1)
-  }
-  return (245 + (360 - 245) * Math.min(1.0, Math.max(0, (dd - 0.05)) / 0.15)) % 360
-}
-
-export function StickCanvas({ x, y, label, circularityData, size = 180, zoomCenter = false }: StickCanvasProps) {
+/**
+ * Exact 1:1 port of draw_stick_dial from the original stick-renderer.js
+ * The original normalises stick values to -1..+1 and radius occupies ~45% of canvas.
+ */
+export function StickCanvas({ x, y, label, circularityData, size = 200, zoomCenter = false }: StickCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  useEffect(() => {
+  const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext("2d")
     if (!ctx) return
 
     const dpr = window.devicePixelRatio || 1
-    canvas.width = size * dpr
-    canvas.height = size * dpr
-    ctx.scale(dpr, dpr)
+    const w = size
+    const h = size
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    const cx = size / 2
-    const cy = size / 2
-    const r = size / 2 - 8
+    const cx = w / 2
+    const cy = h / 2
+    // The original uses 45% of the shorter side as the main radius
+    const R = Math.min(w, h) * 0.45
 
-    // White background circle -- matches the original exactly
-    ctx.lineWidth = 1
-    ctx.fillStyle = "#ffffff"
-    ctx.strokeStyle = "#000000"
+    // ---- Background circle (white fill, black stroke) ----
+    ctx.save()
     ctx.beginPath()
-    ctx.arc(cx, cy, r, 0, 2 * Math.PI)
+    ctx.arc(cx, cy, R, 0, Math.PI * 2)
     ctx.closePath()
+    ctx.fillStyle = "#ffffff"
     ctx.fill()
+    ctx.lineWidth = 1
+    ctx.strokeStyle = "#000000"
     ctx.stroke()
+    ctx.restore()
 
-    // Circularity visualization -- colored triangle wedges from center
+    // ---- Circularity coloured wedges ----
+    // Original algorithm: for each pair of adjacent sectors, draw a triangle
+    // from center to the two edge points, coloured by hue mapped from distance.
     if (circularityData && circularityData.length > 0) {
-      const MAX_N = CIRCULARITY_DATA_SIZE
-      for (let i = 0; i < MAX_N; i++) {
-        const kd = circularityData[i]
-        const kd1 = circularityData[(i + 1) % MAX_N]
-        if (kd === undefined || kd1 === undefined) continue
-        const ka = (i * Math.PI * 2) / MAX_N
-        const ka1 = (((i + 1) % MAX_N) * 2 * Math.PI) / MAX_N
+      const N = CIRCULARITY_DATA_SIZE
+      for (let i = 0; i < N; i++) {
+        const d0 = circularityData[i]
+        const d1 = circularityData[(i + 1) % N]
+        if (d0 === undefined || d1 === undefined) continue
+        if (d0 <= 0 && d1 <= 0) continue
 
-        const kx = Math.cos(ka) * kd
-        const ky = Math.sin(ka) * kd
-        const kx1 = Math.cos(ka1) * kd1
-        const ky1 = Math.sin(ka1) * kd1
+        const a0 = (i / N) * Math.PI * 2
+        const a1 = (((i + 1) % N) / N) * Math.PI * 2
+
+        // Pixel positions on the circle edge, scaled by the measured distance
+        const px0 = cx + Math.cos(a0) * d0 * R
+        const py0 = cy + Math.sin(a0) * d0 * R
+        const px1 = cx + Math.cos(a1) * d1 * R
+        const py1 = cy + Math.sin(a1) * d1 * R
 
         ctx.beginPath()
         ctx.moveTo(cx, cy)
-        ctx.lineTo(cx + kx * r, cy + ky * r)
-        ctx.lineTo(cx + kx1 * r, cy + ky1 * r)
-        ctx.lineTo(cx, cy)
+        ctx.lineTo(px0, py0)
+        ctx.lineTo(px1, py1)
         ctx.closePath()
 
-        const cc = (kd + kd1) / 2
-        const hh = ccToColor(cc)
-        ctx.fillStyle = `hsla(${Math.round(hh)}, 100%, 50%, 0.5)`
+        // Original hue mapping: ccToColor
+        const avg = (d0 + d1) / 2
+        const hue = ccToColor(avg)
+        ctx.fillStyle = `hsla(${Math.round(hue)}, 100%, 50%, 0.50)`
         ctx.fill()
       }
 
-      // Circularity error text
-      const validCount = circularityData.filter(n => n > 0.3).length
-      if (validCount > 10) {
+      // Circularity error % text (only if enough data)
+      const filled = circularityData.filter(v => v > 0.3).length
+      if (filled > 10) {
         const err = calculateCircularityError(circularityData)
-        ctx.fillStyle = "#fff"
-        ctx.strokeStyle = "#444"
-        ctx.lineWidth = 3
+        const txt = `${err.toFixed(1)}%`
+        ctx.font = "bold 16px Arial"
         ctx.textAlign = "center"
         ctx.textBaseline = "middle"
-        ctx.font = "bold 18px Arial"
-        const textY = cy + r * 0.5
-        const text = `${err.toFixed(1)} %`
-        ctx.strokeText(text, cx, textY)
-        ctx.fillText(text, cx, textY)
+        // White text with dark outline (original uses strokeText)
+        ctx.lineWidth = 3
+        ctx.strokeStyle = "#333333"
+        ctx.fillStyle = "#ffffff"
+        ctx.strokeText(txt, cx, cy + R * 0.55)
+        ctx.fillText(txt, cx, cy + R * 0.55)
       }
     }
 
-    // Crosshairs
+    // ---- Crosshairs (gray) ----
     ctx.strokeStyle = "#aaaaaa"
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.moveTo(cx - r, cy)
-    ctx.lineTo(cx + r, cy)
-    ctx.closePath()
+    ctx.moveTo(cx - R, cy)
+    ctx.lineTo(cx + R, cy)
     ctx.stroke()
     ctx.beginPath()
-    ctx.moveTo(cx, cy - r)
-    ctx.lineTo(cx, cy + r)
-    ctx.closePath()
+    ctx.moveTo(cx, cy - R)
+    ctx.lineTo(cx, cy + R)
     ctx.stroke()
 
-    // Zoom center ring at 50% radius
+    // ---- Zoom center mode: draw 50% boundary ring ----
     if (zoomCenter) {
       ctx.strokeStyle = "#d3d3d3"
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.arc(cx, cy, r * 0.5, 0, 2 * Math.PI)
+      ctx.arc(cx, cy, R * 0.5, 0, Math.PI * 2)
       ctx.stroke()
     }
 
-    // Transform stick position
-    let dx = x, dy = y
+    // ---- Transform stick position ----
+    let sx = x
+    let sy = y
     if (zoomCenter) {
-      const z = applyCenterZoom(x, y)
-      dx = z.x
-      dy = z.y
+      // Original center zoom: inner 5% mapped to inner 50%, outer 95% mapped to outer 50%
+      const dist = Math.sqrt(x * x + y * y)
+      if (dist > 0) {
+        const angle = Math.atan2(y, x)
+        const mapped = dist <= 0.05
+          ? (dist / 0.05) * 0.5
+          : 0.5 + ((dist - 0.05) / 0.95) * 0.5
+        sx = Math.cos(angle) * mapped
+        sy = Math.sin(angle) * mapped
+      }
     }
 
-    // Line from center to stick position (variable thickness in zoom mode)
-    ctx.fillStyle = "#000000"
+    // ---- Line from center to stick position ----
+    const stickDist = Math.sqrt(sx * sx + sy * sy)
     ctx.strokeStyle = "#000000"
+    ctx.fillStyle = "#000000"
 
-    const stickDist = Math.sqrt(dx * dx + dy * dy)
-    const boundaryRadius = 0.5
-    const useTwoSegments = zoomCenter && stickDist > boundaryRadius
+    if (zoomCenter && stickDist > 0.5) {
+      // Two-segment line: thick inner, thin outer (original behaviour)
+      const boundaryFrac = 0.5 / stickDist
+      const bx = sx * boundaryFrac
+      const by = sy * boundaryFrac
 
-    if (useTwoSegments) {
-      const bx = (dx / stickDist) * boundaryRadius
-      const by = (dy / stickDist) * boundaryRadius
-      // Thick inner segment
       ctx.lineWidth = 3
       ctx.beginPath()
       ctx.moveTo(cx, cy)
-      ctx.lineTo(cx + bx * r, cy + by * r)
+      ctx.lineTo(cx + bx * R, cy + by * R)
       ctx.stroke()
-      // Thin outer segment
+
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(cx + bx * r, cy + by * r)
-      ctx.lineTo(cx + dx * r, cy + dy * r)
+      ctx.moveTo(cx + bx * R, cy + by * R)
+      ctx.lineTo(cx + sx * R, cy + sy * R)
       ctx.stroke()
     } else {
       ctx.lineWidth = zoomCenter ? 3 : 1
       ctx.beginPath()
       ctx.moveTo(cx, cy)
-      ctx.lineTo(cx + dx * r, cy + dy * r)
+      ctx.lineTo(cx + sx * R, cy + sy * R)
       ctx.stroke()
     }
 
-    // Filled dot at stick position
+    // ---- Stick dot (original: dark blue #030b84, radius 3) ----
     ctx.beginPath()
-    ctx.arc(cx + dx * r, cy + dy * r, 3, 0, 2 * Math.PI)
+    ctx.arc(cx + sx * R, cy + sy * R, 3, 0, Math.PI * 2)
     ctx.fillStyle = "#030b84"
     ctx.fill()
 
-    // Label underneath
+    // ---- Label below circle ----
     ctx.fillStyle = "#666666"
     ctx.font = "11px Arial"
     ctx.textAlign = "center"
     ctx.textBaseline = "top"
-    ctx.fillText(label, cx, size - 6)
+    ctx.fillText(label, cx, cy + R + 6)
   }, [x, y, circularityData, size, zoomCenter, label])
+
+  useEffect(() => { draw() }, [draw])
 
   return (
     <canvas
@@ -186,4 +189,18 @@ export function StickCanvas({ x, y, label, circularityData, size = 180, zoomCent
       className="rounded"
     />
   )
+}
+
+/**
+ * Exact port of ccToColor from the original stick-renderer.js:
+ *   dd = sqrt((1.0 - cc)^2)
+ *   if cc <= 1.0 -> hue = 220 - 220 * clamp((dd-0.05)/0.10)  [green -> red]
+ *   if cc > 1.0  -> hue = (245 + (360-245) * clamp((dd-0.05)/0.15)) % 360  [blue -> red wrap]
+ */
+function ccToColor(cc: number): number {
+  const dd = Math.sqrt(Math.pow(1.0 - cc, 2))
+  if (cc <= 1.0) {
+    return 220 - 220 * Math.min(1.0, Math.max(0, (dd - 0.05) / 0.10))
+  }
+  return (245 + (360 - 245) * Math.min(1.0, Math.max(0, (dd - 0.05) / 0.15))) % 360
 }

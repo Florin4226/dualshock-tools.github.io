@@ -21,6 +21,10 @@ interface RecordRow {
   devices: { serial_number: string; device_type: string; brand: string | null; model: string | null } | null
   pricing: { service_name: string; price: number } | null
   technician: { full_name: string } | null
+  quick_test_data: {
+    entry?: { circularityErrorLeft: number; circularityErrorRight: number; buttonsTestedCount: number; totalButtons: number; allButtonsOk: boolean; stickCenterLX: number; stickCenterLY: number; stickCenterRX: number; stickCenterRY: number; timestamp: string; deviceName: string; serialNumber: string }
+    exit?: { circularityErrorLeft: number; circularityErrorRight: number; buttonsTestedCount: number; totalButtons: number; allButtonsOk: boolean; stickCenterLX: number; stickCenterLY: number; stickCenterRX: number; stickCenterRY: number; timestamp: string; deviceName: string; serialNumber: string }
+  } | null
 }
 
 async function generateServicePDF(record: RecordRow) {
@@ -101,6 +105,57 @@ async function generateServicePDF(record: RecordRow) {
   const partsLines = doc.splitTextToSize(record.parts_used ?? "No parts recorded.", contentW)
   doc.text(partsLines, margin, y)
   y += partsLines.length * 5 + 8
+
+  // Quick Test data if exists
+  if (record.quick_test_data) {
+    const qt = record.quick_test_data
+    if (y > 220) { doc.addPage(); y = margin }
+    section("Quick Test Results")
+
+    if (qt.entry) {
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(9)
+      doc.text("ENTRY (Before Service)", margin, y)
+      doc.setFont("helvetica", "normal")
+      y += 5
+      row("Date", new Date(qt.entry.timestamp).toLocaleString("ro-RO"))
+      row("Circularity Left", `${qt.entry.circularityErrorLeft.toFixed(1)}%`)
+      row("Circularity Right", `${qt.entry.circularityErrorRight.toFixed(1)}%`)
+      row("Center LX/LY", `${qt.entry.stickCenterLX.toFixed(3)} / ${qt.entry.stickCenterLY.toFixed(3)}`)
+      row("Center RX/RY", `${qt.entry.stickCenterRX.toFixed(3)} / ${qt.entry.stickCenterRY.toFixed(3)}`)
+      row("Buttons", `${qt.entry.buttonsTestedCount}/${qt.entry.totalButtons} ${qt.entry.allButtonsOk ? "OK" : "Incomplete"}`)
+      y += 3
+    }
+
+    if (qt.exit) {
+      if (y > 240) { doc.addPage(); y = margin }
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(9)
+      doc.text("EXIT (After Service)", margin, y)
+      doc.setFont("helvetica", "normal")
+      y += 5
+      row("Date", new Date(qt.exit.timestamp).toLocaleString("ro-RO"))
+      row("Circularity Left", `${qt.exit.circularityErrorLeft.toFixed(1)}%`)
+      row("Circularity Right", `${qt.exit.circularityErrorRight.toFixed(1)}%`)
+      row("Center LX/LY", `${qt.exit.stickCenterLX.toFixed(3)} / ${qt.exit.stickCenterLY.toFixed(3)}`)
+      row("Center RX/RY", `${qt.exit.stickCenterRX.toFixed(3)} / ${qt.exit.stickCenterRY.toFixed(3)}`)
+      row("Buttons", `${qt.exit.buttonsTestedCount}/${qt.exit.totalButtons} ${qt.exit.allButtonsOk ? "OK" : "Incomplete"}`)
+      y += 3
+    }
+
+    if (qt.entry && qt.exit) {
+      const circLDiff = qt.exit.circularityErrorLeft - qt.entry.circularityErrorLeft
+      const circRDiff = qt.exit.circularityErrorRight - qt.entry.circularityErrorRight
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(9)
+      doc.text("COMPARISON", margin, y)
+      doc.setFont("helvetica", "normal")
+      y += 5
+      row("Circularity L change", `${circLDiff > 0 ? "+" : ""}${circLDiff.toFixed(1)}% (${circLDiff < 0 ? "improved" : circLDiff > 0 ? "degraded" : "same"})`)
+      row("Circularity R change", `${circRDiff > 0 ? "+" : ""}${circRDiff.toFixed(1)}% (${circRDiff < 0 ? "improved" : circRDiff > 0 ? "degraded" : "same"})`)
+    }
+    y += 4
+  }
 
   doc.setDrawColor(0, 0, 0)
   doc.setLineWidth(0.5)
@@ -379,6 +434,37 @@ export function DocumentsClient({ records }: { records: RecordRow[] }) {
                       <p className="text-sm text-foreground">{selected.parts_used || "No parts recorded."}</p>
                     </div>
                   </div>
+                  {/* Quick Test */}
+                  {selected.quick_test_data && (
+                    <div className="mt-6 border-t border-border pt-4">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Quick Test Results</p>
+                      <div className="grid grid-cols-2 gap-4">
+                        {selected.quick_test_data.entry && (
+                          <div className="rounded-md border border-blue-200 bg-blue-50/50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
+                            <p className="text-xs font-bold text-blue-700 dark:text-blue-400 mb-2">ENTRY (Before)</p>
+                            <div className="space-y-1 text-xs">
+                              <p className="text-foreground">Circ L: <span className="font-mono font-medium">{selected.quick_test_data.entry.circularityErrorLeft.toFixed(1)}%</span></p>
+                              <p className="text-foreground">Circ R: <span className="font-mono font-medium">{selected.quick_test_data.entry.circularityErrorRight.toFixed(1)}%</span></p>
+                              <p className="text-foreground">Center: <span className="font-mono">{selected.quick_test_data.entry.stickCenterLX.toFixed(3)}/{selected.quick_test_data.entry.stickCenterLY.toFixed(3)}</span></p>
+                              <p className="text-foreground">Buttons: <span className="font-medium">{selected.quick_test_data.entry.buttonsTestedCount}/{selected.quick_test_data.entry.totalButtons}</span></p>
+                            </div>
+                          </div>
+                        )}
+                        {selected.quick_test_data.exit && (
+                          <div className="rounded-md border border-green-200 bg-green-50/50 dark:bg-green-950/20 dark:border-green-800 p-3">
+                            <p className="text-xs font-bold text-green-700 dark:text-green-400 mb-2">EXIT (After)</p>
+                            <div className="space-y-1 text-xs">
+                              <p className="text-foreground">Circ L: <span className="font-mono font-medium">{selected.quick_test_data.exit.circularityErrorLeft.toFixed(1)}%</span></p>
+                              <p className="text-foreground">Circ R: <span className="font-mono font-medium">{selected.quick_test_data.exit.circularityErrorRight.toFixed(1)}%</span></p>
+                              <p className="text-foreground">Center: <span className="font-mono">{selected.quick_test_data.exit.stickCenterLX.toFixed(3)}/{selected.quick_test_data.exit.stickCenterLY.toFixed(3)}</span></p>
+                              <p className="text-foreground">Buttons: <span className="font-medium">{selected.quick_test_data.exit.buttonsTestedCount}/{selected.quick_test_data.exit.totalButtons}</span></p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Footer */}
                   <div className="mt-6 flex items-center justify-between border-t border-border pt-4">
                     <div className="text-sm text-muted-foreground">
