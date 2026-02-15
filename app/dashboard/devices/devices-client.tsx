@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useEffect, useTransition, useCallback } from "react"
-import { Plus, Search, Pencil, Trash2, Laptop, Gamepad2, Usb, RefreshCw } from "lucide-react"
+import Link from "next/link"
+import { Plus, Search, Pencil, Trash2, Laptop, Gamepad2, Usb, RefreshCw, Wrench } from "lucide-react"
 import { Modal } from "@/components/ui/modal"
 import { createDevice, updateDevice, deleteDevice } from "../actions"
 import type { Device } from "@/lib/types"
@@ -223,9 +224,14 @@ export function DevicesClient({ devices, isAdmin }: { devices: Device[]; isAdmin
           <h2 className="text-2xl font-bold tracking-tight text-foreground">Devices</h2>
           <p className="mt-1 text-sm text-muted-foreground">{devices.length} registered devices</p>
         </div>
-        <button onClick={openNew} className={btnPrimary}>
-          <Plus className="h-4 w-4" /> Add Device
-        </button>
+        <div className="flex items-center gap-2">
+          <Link href="/dashboard/devices/test" className={cn(btnOutline, "text-primary border-primary/30 hover:bg-primary/10")}>
+            <Wrench className="h-4 w-4" /> Test & Calibrate
+          </Link>
+          <button onClick={openNew} className={btnPrimary}>
+            <Plus className="h-4 w-4" /> Add Device
+          </button>
+        </div>
       </div>
 
       {/* USB auto-detect */}
