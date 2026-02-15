@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useTransition, useCallback } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { Plus, Search, Pencil, Trash2, Laptop, Gamepad2, Usb, RefreshCw, Wrench } from "lucide-react"
 import { Modal } from "@/components/ui/modal"
 import { createDevice, updateDevice, deleteDevice } from "../actions"
@@ -160,12 +161,29 @@ function ControllerDetector({
 }
 
 export function DevicesClient({ devices, isAdmin }: { devices: Device[]; isAdmin: boolean }) {
+  const searchParams = useSearchParams()
   const [search, setSearch] = useState("")
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Device | null>(null)
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState("")
-  const [prefill, setPrefill] = useState<{ brand: string; model: string; type: string } | null>(null)
+  const [prefill, setPrefill] = useState<{ brand: string; model: string; type: string; serial?: string } | null>(null)
+
+  // Auto-open modal with serial from Test & Calibrate page
+  useEffect(() => {
+    if (searchParams.get("add") === "1") {
+      const serial = searchParams.get("serial") || ""
+      const brand = searchParams.get("brand") || "Sony"
+      const model = searchParams.get("model") || ""
+      const type = searchParams.get("type") || "playstation_controller"
+      setEditing(null)
+      setPrefill({ brand, model, type, serial })
+      setError("")
+      setModalOpen(true)
+      // Clean URL
+      window.history.replaceState({}, "", "/dashboard/devices")
+    }
+  }, [searchParams])
 
   const filtered = devices.filter(
     (d) =>
@@ -307,7 +325,7 @@ export function DevicesClient({ devices, isAdmin }: { devices: Device[]; isAdmin
           {error && <div className="rounded-md bg-destructive/10 border border-destructive/50 p-3 text-sm text-destructive">{error}</div>}
           <div className="flex flex-col gap-2">
             <label className={labelClass}>Serial Number</label>
-            <input name="serial_number" required defaultValue={editing?.serial_number ?? ""} className={inputClass} placeholder="e.g. DS5-2025-001" />
+            <input name="serial_number" required defaultValue={editing?.serial_number ?? prefill?.serial ?? ""} className={inputClass} placeholder="e.g. DS5-2025-001" />
           </div>
           <div className="flex flex-col gap-2">
             <label className={labelClass}>Device Type</label>

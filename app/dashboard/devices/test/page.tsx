@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   Usb, ArrowLeft, Battery, BatteryCharging, Info, Crosshair,
-  Maximize, Save, RotateCcw, ChevronDown, ChevronUp, Copy, Check, AlertTriangle, Gamepad2
+  Maximize, Save, RotateCcw, ChevronDown, ChevronUp, Copy, Check,
+  AlertTriangle, Gamepad2, Plus
 } from "lucide-react"
 import { StickCanvas } from "@/components/controller/stick-canvas"
 import { createControllerInstance, SUPPORTED_DEVICES, getDeviceName, getDeviceModel } from "@/lib/controller/controller-factory"
@@ -13,30 +15,77 @@ import type { BaseController } from "@/lib/controller/base-controller"
 import type { ControllerInfo, NvStatus, BatteryStatus, StickData, InfoItem } from "@/lib/controller/utils"
 import { cn } from "@/lib/utils"
 
-// Button names for visual layout
-const PS_BUTTONS = [
-  "triangle", "circle", "cross", "square",
-  "l1", "r1", "l2", "r2",
-  "up", "down", "left", "right",
-  "options", "create", "share",
-  "l3", "r3", "ps", "touchpad", "mute",
-]
+// PS button definitions: name -> SVG symbol/shape
+const PS_BUTTON_GROUPS = {
+  face: ["triangle", "circle", "cross", "square"],
+  shoulder: ["l1", "r1", "l2", "r2"],
+  dpad: ["up", "down", "left", "right"],
+  center: ["create", "options", "ps", "touchpad", "mute"],
+  stick: ["l3", "r3"],
+}
+
+const PS_BUTTON_COLORS: Record<string, string> = {
+  triangle: "#00d49b",
+  circle: "#ff6467",
+  cross: "#6eaaff",
+  square: "#f49ec4",
+}
+
+const PS_BUTTON_SYMBOLS: Record<string, string> = {
+  triangle: "\u25B3",
+  circle: "\u25CB",
+  cross: "\u2715",
+  square: "\u25A1",
+  l1: "L1", r1: "R1", l2: "L2", r2: "R2",
+  up: "\u25B2", down: "\u25BC", left: "\u25C0", right: "\u25B6",
+  create: "Create", options: "Options", share: "Share",
+  ps: "PS", touchpad: "Touch", mute: "Mute",
+  l3: "L3", r3: "R3",
+}
 
 type CalibStep = "idle" | "center-begin" | "center-sampling" | "center-done" | "range-active" | "range-done"
 
-function ButtonIndicator({ name, active }: { name: string; active: boolean }) {
+/* --- PS-style button indicator --- */
+function PSButton({ name, active }: { name: string; active: boolean }) {
+  const isFace = PS_BUTTON_COLORS[name] !== undefined
+  const symbol = PS_BUTTON_SYMBOLS[name] || name
+  const faceColor = PS_BUTTON_COLORS[name]
+
+  if (isFace) {
+    return (
+      <div className={cn(
+        "flex h-10 w-10 items-center justify-center rounded-full border-2 text-base font-bold transition-all",
+        active
+          ? "scale-110 shadow-lg"
+          : "opacity-40"
+      )} style={{
+        borderColor: faceColor,
+        backgroundColor: active ? faceColor : "transparent",
+        color: active ? "#fff" : faceColor,
+      }}>
+        {symbol}
+      </div>
+    )
+  }
+
+  // Shoulder / d-pad / center buttons
+  const isDpad = ["up", "down", "left", "right"].includes(name)
+  const isShoulder = ["l1", "r1", "l2", "r2"].includes(name)
+
   return (
     <div className={cn(
-      "flex h-8 items-center justify-center rounded px-2.5 text-xs font-medium uppercase transition-colors border",
+      "flex items-center justify-center text-xs font-semibold uppercase transition-all border",
+      isDpad ? "h-8 w-8 rounded" : isShoulder ? "h-7 rounded-md px-2.5" : "h-7 rounded-full px-2.5",
       active
-        ? "bg-primary text-primary-foreground border-primary"
-        : "bg-muted/30 text-muted-foreground border-border"
+        ? "bg-foreground text-background border-foreground scale-105"
+        : "bg-transparent text-muted-foreground/50 border-muted-foreground/20"
     )}>
-      {name}
+      {symbol}
     </div>
   )
 }
 
+/* --- Info Row --- */
 function InfoRow({ item, copiedKey, onCopy }: { item: InfoItem; copiedKey: string | null; onCopy: (key: string, value: string) => void }) {
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-muted/30">
@@ -46,12 +95,9 @@ function InfoRow({ item, copiedKey, onCopy }: { item: InfoItem; copiedKey: strin
           {item.value}
         </span>
         {item.copyable && (
-          <button
-            type="button"
-            onClick={() => onCopy(item.key, item.value)}
+          <button type="button" onClick={() => onCopy(item.key, item.value)}
             className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:text-foreground"
-            aria-label={`Copy ${item.key}`}
-          >
+            aria-label={`Copy ${item.key}`}>
             {copiedKey === item.key ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
           </button>
         )}
@@ -60,7 +106,9 @@ function InfoRow({ item, copiedKey, onCopy }: { item: InfoItem; copiedKey: strin
   )
 }
 
+/* ============ Main Page ============ */
 export default function ControllerTestPage() {
+  const router = useRouter()
   const [supported, setSupported] = useState<boolean | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [controller, setController] = useState<BaseController | null>(null)
@@ -76,19 +124,20 @@ export default function ControllerTestPage() {
   const [log, setLog] = useState<string[]>([])
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
-  // Calibration state
+  // Calibration
   const [calibStep, setCalibStep] = useState<CalibStep>("idle")
   const [calibProgress, setCalibProgress] = useState(0)
   const [calibMsg, setCalibMsg] = useState("")
   const [hasChanges, setHasChanges] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // Circularity tracking
+  // Circularity
   const llDataRef = useRef<number[]>(new Array(CIRCULARITY_DATA_SIZE).fill(0))
   const rrDataRef = useRef<number[]>(new Array(CIRCULARITY_DATA_SIZE).fill(0))
   const [circLeft, setCircLeft] = useState<number[]>([])
   const [circRight, setCircRight] = useState<number[]>([])
   const [zoomCenter, setZoomCenter] = useState(false)
+  const [stickMode, setStickMode] = useState<"normal" | "zoom" | "circularity">("normal")
 
   const controllerRef = useRef<BaseController | null>(null)
 
@@ -97,53 +146,61 @@ export default function ControllerTestPage() {
   }, [])
 
   // Check WebHID support
-  useEffect(() => {
-    setSupported("hid" in navigator)
-  }, [])
+  useEffect(() => { setSupported("hid" in navigator) }, [])
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      controllerRef.current?.close()
-    }
+    return () => { controllerRef.current?.close() }
   }, [])
 
-  // Input report handling loop
+  // Input report handling -- 60fps via requestAnimationFrame
   useEffect(() => {
     if (!controller) return
     const device = controller.device
-    const handler = (event: HIDInputReportEvent) => {
-      const data = event.data
-      // Only process USB reports (63 bytes for DS4, 63+ for DS5)
-      if (data.byteLength < 10) return
-      try {
-        const parsed = controller.parseInput(data)
-        setSticks(parsed.sticks)
-        setButtons(parsed.buttons)
-        setBattery(parsed.battery)
+    let latestData: DataView | null = null
 
-        // Update circularity data
-        const { lx, ly, rx, ry } = parsed.sticks
-        const lDist = Math.sqrt(lx * lx + ly * ly)
-        const rDist = Math.sqrt(rx * rx + ry * ry)
-        if (lDist > 0.3) {
-          const angle = Math.atan2(ly, lx)
-          const idx = Math.round(((angle + Math.PI) / (2 * Math.PI)) * CIRCULARITY_DATA_SIZE) % CIRCULARITY_DATA_SIZE
-          llDataRef.current[idx] = lDist
-        }
-        if (rDist > 0.3) {
-          const angle = Math.atan2(ry, rx)
-          const idx = Math.round(((angle + Math.PI) / (2 * Math.PI)) * CIRCULARITY_DATA_SIZE) % CIRCULARITY_DATA_SIZE
-          rrDataRef.current[idx] = rDist
-        }
-        setCircLeft([...llDataRef.current])
-        setCircRight([...rrDataRef.current])
-      } catch { /* skip bad frame */ }
+    const onReport = (event: HIDInputReportEvent) => { latestData = event.data }
+    device.addEventListener("inputreport", onReport)
+
+    let raf: number
+    const loop = () => {
+      if (latestData && latestData.byteLength >= 10) {
+        try {
+          const parsed = controller.parseInput(latestData)
+          setSticks(parsed.sticks)
+          setButtons(parsed.buttons)
+          setBattery(parsed.battery)
+
+          // Update circularity data
+          const { lx, ly, rx, ry } = parsed.sticks
+          const lDist = Math.sqrt(lx * lx + ly * ly)
+          const rDist = Math.sqrt(rx * rx + ry * ry)
+          if (lDist > 0.3) {
+            const angle = Math.atan2(ly, lx)
+            const idx = Math.round(((angle + Math.PI) / (2 * Math.PI)) * CIRCULARITY_DATA_SIZE) % CIRCULARITY_DATA_SIZE
+            llDataRef.current[idx] = lDist
+          }
+          if (rDist > 0.3) {
+            const angle = Math.atan2(ry, rx)
+            const idx = Math.round(((angle + Math.PI) / (2 * Math.PI)) * CIRCULARITY_DATA_SIZE) % CIRCULARITY_DATA_SIZE
+            rrDataRef.current[idx] = rDist
+          }
+          setCircLeft([...llDataRef.current])
+          setCircRight([...rrDataRef.current])
+        } catch { /* skip bad frame */ }
+        latestData = null
+      }
+      raf = requestAnimationFrame(loop)
     }
-    device.addEventListener("inputreport", handler)
-    return () => { device.removeEventListener("inputreport", handler) }
+    raf = requestAnimationFrame(loop)
+
+    return () => {
+      device.removeEventListener("inputreport", onReport)
+      cancelAnimationFrame(raf)
+    }
   }, [controller])
 
+  /* ---- Connection ---- */
   async function handleConnect() {
     if (!("hid" in navigator)) return
     setConnecting(true)
@@ -160,7 +217,6 @@ export default function ControllerTestPage() {
 
       addLog(`Connected to ${device.productName || "device"} (${device.vendorId}:${device.productId})`)
 
-      // Check USB (DS4 sends 63 bytes via USB, DS5 sends 63 bytes via USB)
       const ctrl = createControllerInstance(device)
       controllerRef.current = ctrl
       setController(ctrl)
@@ -189,26 +245,30 @@ export default function ControllerTestPage() {
   }
 
   async function handleDisconnect() {
-    if (controllerRef.current) {
-      await controllerRef.current.close()
-      controllerRef.current = null
-    }
-    setController(null)
-    setInfo(null)
-    setSerialNumber("")
-    setDeviceName("")
-    setSticks({ lx: 0, ly: 0, rx: 0, ry: 0 })
-    setButtons({})
-    setBattery(null)
-    setNvStatus(null)
-    setCalibStep("idle")
-    setHasChanges(false)
+    if (controllerRef.current) { await controllerRef.current.close(); controllerRef.current = null }
+    setController(null); setInfo(null); setSerialNumber(""); setDeviceName("")
+    setSticks({ lx: 0, ly: 0, rx: 0, ry: 0 }); setButtons({}); setBattery(null)
+    setNvStatus(null); setCalibStep("idle"); setHasChanges(false)
     llDataRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0)
     rrDataRef.current = new Array(CIRCULARITY_DATA_SIZE).fill(0)
     setCircLeft([]); setCircRight([])
     addLog("Disconnected")
   }
 
+  /* ---- Add to Devices ---- */
+  function handleAddToDevices() {
+    const model = controller ? getDeviceModel(controller.device.productId) : ""
+    const params = new URLSearchParams({
+      add: "1",
+      serial: serialNumber,
+      brand: "Sony",
+      model: deviceName,
+      type: "playstation_controller",
+    })
+    router.push(`/dashboard/devices?${params.toString()}`)
+  }
+
+  /* ---- Calibration ---- */
   async function handleCenterCalibration() {
     if (!controller) return
     setCalibStep("center-begin"); setCalibMsg("Starting center calibration..."); setCalibProgress(10)
@@ -278,8 +338,7 @@ export default function ControllerTestPage() {
     try {
       const res = await controller.flash()
       addLog(res.message)
-      setHasChanges(false)
-      setCalibStep("idle"); setCalibMsg("Saved!")
+      setHasChanges(false); setCalibStep("idle"); setCalibMsg("Saved!")
     } catch (err: any) {
       setError(err.message || "Save failed")
       addLog(`Save error: ${err.message}`)
@@ -292,9 +351,7 @@ export default function ControllerTestPage() {
       await controller.reset()
       addLog("Controller reset. Reconnect.")
       await handleDisconnect()
-    } catch (err: any) {
-      addLog(`Reset error: ${err.message}`)
-    }
+    } catch (err: any) { addLog(`Reset error: ${err.message}`) }
   }
 
   function handleCopy(key: string, value: string) {
@@ -327,13 +384,13 @@ export default function ControllerTestPage() {
     )
   }
 
-  // Hardware info items split
   const hwItems = info?.infoItems?.filter(i => i.cat === "hw" && !i.isExtra) || []
   const fwItems = info?.infoItems?.filter(i => i.cat === "fw" && !i.isExtra) || []
   const extraItems = info?.infoItems?.filter(i => i.isExtra) || []
-
   const model = controller ? getDeviceModel(controller.device.productId) : ""
   const isDS5 = model === "DS5" || model === "DS5_Edge"
+  const useZoom = stickMode === "zoom"
+  const showCirc = stickMode === "circularity"
 
   return (
     <div className="flex flex-col gap-6">
@@ -349,13 +406,21 @@ export default function ControllerTestPage() {
           </div>
         </div>
         {!controller ? (
-          <button onClick={handleConnect} disabled={connecting} className="flex h-10 items-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+          <button onClick={handleConnect} disabled={connecting}
+            className="flex h-10 items-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
             <Usb className="h-4 w-4" />
             {connecting ? "Connecting..." : "Connect Controller"}
           </button>
         ) : (
           <div className="flex items-center gap-2">
-            <button onClick={handleDisconnect} className="flex h-10 items-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium text-foreground hover:bg-accent">
+            {serialNumber && (
+              <button onClick={handleAddToDevices}
+                className="flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+                <Plus className="h-4 w-4" /> Add to Devices
+              </button>
+            )}
+            <button onClick={handleDisconnect}
+              className="flex h-10 items-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium text-foreground hover:bg-accent">
               Disconnect
             </button>
           </div>
@@ -376,14 +441,14 @@ export default function ControllerTestPage() {
           <div>
             <p className="text-sm font-medium text-foreground">No controller connected</p>
             <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-              Click "Connect Controller" and plug your PS4/PS5 controller via USB cable.
-              Bluetooth is not supported - use a wired connection.
+              Click &quot;Connect Controller&quot; and plug your PS4/PS5 controller via USB cable.
+              Bluetooth is not supported &mdash; use a wired connection.
             </p>
           </div>
         </div>
       ) : (
         <>
-          {/* Device Status Bar */}
+          {/* Status Bar */}
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">
@@ -394,7 +459,8 @@ export default function ControllerTestPage() {
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-muted-foreground">SN:</span>
                   <span className="font-mono text-xs text-foreground">{serialNumber}</span>
-                  <button onClick={() => handleCopy("serial", serialNumber)} className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground">
+                  <button onClick={() => handleCopy("serial", serialNumber)}
+                    className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground">
                     {copiedKey === "serial" ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
                   </button>
                 </div>
@@ -425,45 +491,95 @@ export default function ControllerTestPage() {
             </div>
           </div>
 
-          {/* Main Grid: Sticks + Buttons + Info */}
+          {/* Grid: Sticks | Buttons | Info */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            {/* Sticks */}
+
+            {/* ---- Analog Sticks ---- */}
             <div className="rounded-lg border border-border bg-card p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-medium text-foreground">Analog Sticks</h3>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setZoomCenter(!zoomCenter)} className={cn("flex h-7 items-center gap-1 rounded px-2 text-xs border transition-colors", zoomCenter ? "bg-primary/10 border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
-                    <Maximize className="h-3 w-3" /> Zoom
-                  </button>
-                  <button onClick={resetCircularity} className="flex h-7 items-center gap-1 rounded px-2 text-xs border border-border text-muted-foreground hover:text-foreground">
-                    <RotateCcw className="h-3 w-3" /> Reset
-                  </button>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-foreground">Joystick Info</h3>
+                <div className="flex items-center gap-1">
+                  {(["normal", "zoom", "circularity"] as const).map(m => (
+                    <button key={m} onClick={() => { setStickMode(m); if (m === "circularity") resetCircularity() }}
+                      className={cn("h-7 rounded px-2 text-[11px] border transition-colors",
+                        stickMode === m ? "bg-primary/10 border-primary text-primary font-medium" : "border-border text-muted-foreground hover:text-foreground"
+                      )}>
+                      {m === "normal" ? "Normal" : m === "zoom" ? "10x zoom" : "Circularity"}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <div className="flex flex-wrap items-center justify-center gap-4">
-                <StickCanvas x={sticks.lx} y={sticks.ly} label="Left Stick" circularityData={circLeft} zoomCenter={zoomCenter} />
-                <StickCanvas x={sticks.rx} y={sticks.ry} label="Right Stick" circularityData={circRight} zoomCenter={zoomCenter} />
+              <div className="flex items-center justify-center gap-4">
+                <StickCanvas x={sticks.lx} y={sticks.ly} label="Left Stick"
+                  circularityData={showCirc ? circLeft : undefined}
+                  zoomCenter={useZoom} />
+                <StickCanvas x={sticks.rx} y={sticks.ry} label="Right Stick"
+                  circularityData={showCirc ? circRight : undefined}
+                  zoomCenter={useZoom} />
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-3 text-center">
-                <div className="text-xs text-muted-foreground">
-                  L: <span className="font-mono">{sticks.lx.toFixed(3)}</span>, <span className="font-mono">{sticks.ly.toFixed(3)}</span>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  R: <span className="font-mono">{sticks.rx.toFixed(3)}</span>, <span className="font-mono">{sticks.ry.toFixed(3)}</span>
-                </div>
+              <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+                <div className="text-[11px] text-muted-foreground">LX: <span className="font-mono">{sticks.lx.toFixed(2)}</span></div>
+                <div className="text-[11px] text-muted-foreground">LY: <span className="font-mono">{sticks.ly.toFixed(2)}</span></div>
+                <div className="text-[11px] text-muted-foreground">RX: <span className="font-mono">{sticks.rx.toFixed(2)}</span></div>
+                <div className="text-[11px] text-muted-foreground">RY: <span className="font-mono">{sticks.ry.toFixed(2)}</span></div>
               </div>
+              {showCirc && (
+                <button onClick={resetCircularity}
+                  className="mt-2 flex w-full items-center justify-center gap-1 rounded h-7 text-xs border border-border text-muted-foreground hover:text-foreground">
+                  <RotateCcw className="h-3 w-3" /> Reset circularity data
+                </button>
+              )}
             </div>
 
-            {/* Buttons */}
+            {/* ---- Button Test ---- */}
             <div className="rounded-lg border border-border bg-card p-4">
               <h3 className="text-sm font-medium text-foreground mb-4">Button Test</h3>
-              <div className="flex flex-wrap gap-1.5">
-                {PS_BUTTONS.map(name => (
-                  <ButtonIndicator key={name} name={name} active={!!buttons[name]} />
-                ))}
+
+              {/* Face buttons in diamond layout */}
+              <div className="flex items-center justify-center mb-4">
+                <div className="grid grid-cols-3 gap-0 w-[120px]">
+                  <div />
+                  <div className="flex justify-center"><PSButton name="triangle" active={!!buttons.triangle} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="square" active={!!buttons.square} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="circle" active={!!buttons.circle} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="cross" active={!!buttons.cross} /></div>
+                  <div />
+                </div>
               </div>
-              <div className="mt-4 pt-3 border-t border-border">
-                <p className="text-xs text-muted-foreground">
+
+              {/* Shoulder */}
+              <div className="flex items-center justify-center gap-2 mb-3">
+                {PS_BUTTON_GROUPS.shoulder.map(b => <PSButton key={b} name={b} active={!!buttons[b]} />)}
+              </div>
+
+              {/* D-pad in cross layout */}
+              <div className="flex items-center justify-center mb-3">
+                <div className="grid grid-cols-3 gap-0.5 w-[90px]">
+                  <div />
+                  <div className="flex justify-center"><PSButton name="up" active={!!buttons.up} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="left" active={!!buttons.left} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="right" active={!!buttons.right} /></div>
+                  <div />
+                  <div className="flex justify-center"><PSButton name="down" active={!!buttons.down} /></div>
+                  <div />
+                </div>
+              </div>
+
+              {/* Center + Sticks */}
+              <div className="flex flex-wrap items-center justify-center gap-1.5 mb-2">
+                {PS_BUTTON_GROUPS.center.map(b => <PSButton key={b} name={b} active={!!buttons[b]} />)}
+              </div>
+              <div className="flex items-center justify-center gap-2">
+                {PS_BUTTON_GROUPS.stick.map(b => <PSButton key={b} name={b} active={!!buttons[b]} />)}
+              </div>
+
+              <div className="mt-3 pt-3 border-t border-border">
+                <p className="text-xs text-muted-foreground text-center">
                   {Object.values(buttons).filter(Boolean).length > 0
                     ? `Active: ${Object.entries(buttons).filter(([, v]) => v).map(([k]) => k).join(", ")}`
                     : "Press any button to test"
@@ -472,7 +588,7 @@ export default function ControllerTestPage() {
               </div>
             </div>
 
-            {/* Info */}
+            {/* ---- Info ---- */}
             <div className="rounded-lg border border-border bg-card p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Info className="h-4 w-4 text-primary" />
@@ -492,7 +608,8 @@ export default function ControllerTestPage() {
               )}
               {extraItems.length > 0 && (
                 <>
-                  <button onClick={() => setShowExtra(!showExtra)} className="flex w-full items-center justify-between py-1.5 text-xs text-muted-foreground hover:text-foreground">
+                  <button onClick={() => setShowExtra(!showExtra)}
+                    className="flex w-full items-center justify-between py-1.5 text-xs text-muted-foreground hover:text-foreground">
                     <span>{showExtra ? "Hide" : "Show"} {extraItems.length} extra fields</span>
                     {showExtra ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                   </button>
@@ -502,7 +619,7 @@ export default function ControllerTestPage() {
             </div>
           </div>
 
-          {/* Calibration Tools */}
+          {/* ---- Calibration Tools ---- */}
           <div className="rounded-lg border border-border bg-card p-5">
             <h3 className="text-sm font-semibold text-foreground mb-4">Calibration Tools</h3>
 
@@ -518,12 +635,10 @@ export default function ControllerTestPage() {
             )}
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {/* Center Calibration */}
-              <button
-                onClick={handleCenterCalibration}
+              {/* Center */}
+              <button onClick={handleCenterCalibration}
                 disabled={calibStep !== "idle" && calibStep !== "center-done" && calibStep !== "range-done"}
-                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left"
-              >
+                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left">
                 <Crosshair className="h-5 w-5 text-primary" />
                 <div>
                   <p className="text-sm font-medium text-foreground">Center Calibration</p>
@@ -533,13 +648,11 @@ export default function ControllerTestPage() {
                 </div>
               </button>
 
-              {/* Range Calibration */}
+              {/* Range */}
               {calibStep !== "range-active" ? (
-                <button
-                  onClick={handleRangeCalibration}
+                <button onClick={handleRangeCalibration}
                   disabled={calibStep !== "idle" && calibStep !== "center-done" && calibStep !== "range-done"}
-                  className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left"
-                >
+                  className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left">
                   <Maximize className="h-5 w-5 text-primary" />
                   <div>
                     <p className="text-sm font-medium text-foreground">Range Calibration</p>
@@ -547,10 +660,8 @@ export default function ControllerTestPage() {
                   </div>
                 </button>
               ) : (
-                <button
-                  onClick={handleRangeCalibrationEnd}
-                  className="flex flex-col items-start gap-2 rounded-lg border border-primary bg-primary/5 p-4 hover:bg-primary/10 transition-colors text-left"
-                >
+                <button onClick={handleRangeCalibrationEnd}
+                  className="flex flex-col items-start gap-2 rounded-lg border border-primary bg-primary/5 p-4 hover:bg-primary/10 transition-colors text-left">
                   <Maximize className="h-5 w-5 text-primary animate-pulse" />
                   <div>
                     <p className="text-sm font-medium text-primary">Finish Range Calibration</p>
@@ -560,11 +671,8 @@ export default function ControllerTestPage() {
               )}
 
               {/* Save */}
-              <button
-                onClick={handleSave}
-                disabled={!hasChanges || saving}
-                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left"
-              >
+              <button onClick={handleSave} disabled={!hasChanges || saving}
+                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors disabled:opacity-50 text-left">
                 <Save className={cn("h-5 w-5", hasChanges ? "text-green-500" : "text-muted-foreground")} />
                 <div>
                   <p className="text-sm font-medium text-foreground">{saving ? "Saving..." : "Save Changes"}</p>
@@ -573,10 +681,8 @@ export default function ControllerTestPage() {
               </button>
 
               {/* Reset */}
-              <button
-                onClick={handleReset}
-                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors text-left"
-              >
+              <button onClick={handleReset}
+                className="flex flex-col items-start gap-2 rounded-lg border border-border p-4 hover:bg-accent/50 transition-colors text-left">
                 <RotateCcw className="h-5 w-5 text-destructive" />
                 <div>
                   <p className="text-sm font-medium text-foreground">Reset Controller</p>
@@ -589,7 +695,7 @@ export default function ControllerTestPage() {
           {/* Fine-Tune (DS5/Edge only) */}
           {isDS5 && <FineTunePanel controller={controller} addLog={addLog} onChanges={() => setHasChanges(true)} />}
 
-          {/* Log */}
+          {/* Activity Log */}
           <details className="rounded-lg border border-border bg-card">
             <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">Activity Log ({log.length})</summary>
             <div className="max-h-48 overflow-y-auto border-t border-border p-4">
@@ -610,6 +716,7 @@ export default function ControllerTestPage() {
   )
 }
 
+/* ============ Fine-Tune Panel ============ */
 function FineTunePanel({ controller, addLog, onChanges }: { controller: BaseController; addLog: (msg: string) => void; onChanges: () => void }) {
   const [finetuneData, setFinetuneData] = useState<number[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -621,9 +728,8 @@ function FineTunePanel({ controller, addLog, onChanges }: { controller: BaseCont
       const data = await (controller as any).getInMemoryModuleData()
       setFinetuneData(data)
       addLog("Fine-tune data loaded")
-    } catch (err: any) {
-      addLog(`Fine-tune load error: ${err.message}`)
-    } finally { setLoading(false) }
+    } catch (err: any) { addLog(`Fine-tune load error: ${err.message}`) }
+    finally { setLoading(false) }
   }
 
   async function writeFinetuneData() {
@@ -632,29 +738,28 @@ function FineTunePanel({ controller, addLog, onChanges }: { controller: BaseCont
       await (controller as any).writeFinetuneData(finetuneData)
       onChanges()
       addLog("Fine-tune data written to controller memory")
-    } catch (err: any) {
-      addLog(`Fine-tune write error: ${err.message}`)
-    }
+    } catch (err: any) { addLog(`Fine-tune write error: ${err.message}`) }
   }
 
   const maxVal = (controller as any).finetuneMaxValue || 65535
   const labels = [
-    "L-Stick X Min", "L-Stick X Center", "L-Stick X Max",
-    "L-Stick Y Min", "L-Stick Y Center", "L-Stick Y Max",
-    "R-Stick X Min", "R-Stick X Center", "R-Stick X Max",
-    "R-Stick Y Min", "R-Stick Y Center", "R-Stick Y Max",
+    "L-Left", "L-Top", "R-Left", "R-Top",
+    "L-Right", "L-Bottom", "R-Right", "R-Bottom",
+    "LX Center", "LY Center", "RX Center", "RY Center",
   ]
 
   return (
     <div className="rounded-lg border border-border bg-card p-5">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-foreground">Fine-Tune (DS5/Edge)</h3>
+        <h3 className="text-sm font-semibold text-foreground">Fine-Tune Stick Calibration (DS5/Edge)</h3>
         <div className="flex items-center gap-2">
-          <button onClick={loadFinetuneData} disabled={loading} className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50">
+          <button onClick={loadFinetuneData} disabled={loading}
+            className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50">
             {loading ? "Loading..." : "Load Data"}
           </button>
           {finetuneData && (
-            <button onClick={writeFinetuneData} className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">
+            <button onClick={writeFinetuneData}
+              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">
               Write to Controller
             </button>
           )}
@@ -662,17 +767,13 @@ function FineTunePanel({ controller, addLog, onChanges }: { controller: BaseCont
       </div>
 
       {!finetuneData ? (
-        <p className="text-xs text-muted-foreground">Click "Load Data" to read current fine-tune values from the controller.</p>
+        <p className="text-xs text-muted-foreground">Click &quot;Load Data&quot; to read current fine-tune values from the controller.</p>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           {finetuneData.map((val, i) => (
             <div key={i} className="flex flex-col gap-1">
               <label className="text-[10px] text-muted-foreground">{labels[i] || `Param ${i}`}</label>
-              <input
-                type="number"
-                min={0}
-                max={maxVal}
-                value={val}
+              <input type="number" min={0} max={maxVal} value={val}
                 onChange={(e) => {
                   const newData = [...finetuneData]
                   newData[i] = Math.max(0, Math.min(maxVal, parseInt(e.target.value) || 0))

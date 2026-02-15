@@ -22,6 +22,14 @@ function applyCenterZoom(x: number, y: number): { x: number; y: number } {
   return { x: Math.cos(angle) * newDist, y: Math.sin(angle) * newDist }
 }
 
+function ccToColor(cc: number): number {
+  const dd = Math.sqrt(Math.pow(1.0 - cc, 2))
+  if (cc <= 1.0) {
+    return 220 - 220 * Math.min(1.0, Math.max(0, (dd - 0.05)) / 0.1)
+  }
+  return (245 + (360 - 245) * Math.min(1.0, Math.max(0, (dd - 0.05)) / 0.15)) % 360
+}
+
 export function StickCanvas({ x, y, label, circularityData, size = 180, zoomCenter = false }: StickCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -40,98 +48,142 @@ export function StickCanvas({ x, y, label, circularityData, size = 180, zoomCent
     const cy = size / 2
     const r = size / 2 - 8
 
-    // Background circle
-    ctx.fillStyle = "#1a1a2e"
-    ctx.strokeStyle = "#3a3a5e"
+    // White background circle -- matches the original exactly
     ctx.lineWidth = 1
+    ctx.fillStyle = "#ffffff"
+    ctx.strokeStyle = "#000000"
     ctx.beginPath()
     ctx.arc(cx, cy, r, 0, 2 * Math.PI)
     ctx.closePath()
     ctx.fill()
     ctx.stroke()
 
-    // Circularity visualization
+    // Circularity visualization -- colored triangle wedges from center
     if (circularityData && circularityData.length > 0) {
-      for (let i = 0; i < CIRCULARITY_DATA_SIZE; i++) {
+      const MAX_N = CIRCULARITY_DATA_SIZE
+      for (let i = 0; i < MAX_N; i++) {
         const kd = circularityData[i]
-        const kd1 = circularityData[(i + 1) % CIRCULARITY_DATA_SIZE]
+        const kd1 = circularityData[(i + 1) % MAX_N]
         if (kd === undefined || kd1 === undefined) continue
-        const ka = (i * Math.PI * 2) / CIRCULARITY_DATA_SIZE
-        const ka1 = (((i + 1) % CIRCULARITY_DATA_SIZE) * 2 * Math.PI) / CIRCULARITY_DATA_SIZE
+        const ka = (i * Math.PI * 2) / MAX_N
+        const ka1 = (((i + 1) % MAX_N) * 2 * Math.PI) / MAX_N
+
+        const kx = Math.cos(ka) * kd
+        const ky = Math.sin(ka) * kd
+        const kx1 = Math.cos(ka1) * kd1
+        const ky1 = Math.sin(ka1) * kd1
+
         ctx.beginPath()
         ctx.moveTo(cx, cy)
-        ctx.lineTo(cx + Math.cos(ka) * kd * r, cy + Math.sin(ka) * kd * r)
-        ctx.lineTo(cx + Math.cos(ka1) * kd1 * r, cy + Math.sin(ka1) * kd1 * r)
+        ctx.lineTo(cx + kx * r, cy + ky * r)
+        ctx.lineTo(cx + kx1 * r, cy + ky1 * r)
+        ctx.lineTo(cx, cy)
         ctx.closePath()
+
         const cc = (kd + kd1) / 2
-        const dd = Math.sqrt(Math.pow(1.0 - cc, 2))
-        let hh = cc <= 1.0
-          ? 220 - 220 * Math.min(1.0, Math.max(0, dd - 0.05) / 0.1)
-          : ((245 + ((360 - 245) * Math.min(1.0, Math.max(0, dd - 0.05) / 0.15))) % 360)
-        ctx.fillStyle = `hsla(${Math.round(hh)}, 100%, 50%, 0.35)`
+        const hh = ccToColor(cc)
+        ctx.fillStyle = `hsla(${Math.round(hh)}, 100%, 50%, 0.5)`
         ctx.fill()
       }
+
+      // Circularity error text
       const validCount = circularityData.filter(n => n > 0.3).length
       if (validCount > 10) {
         const err = calculateCircularityError(circularityData)
         ctx.fillStyle = "#fff"
-        ctx.font = "bold 16px sans-serif"
+        ctx.strokeStyle = "#444"
+        ctx.lineWidth = 3
         ctx.textAlign = "center"
         ctx.textBaseline = "middle"
-        ctx.fillText(`${err.toFixed(1)}%`, cx, cy + r * 0.55)
+        ctx.font = "bold 18px Arial"
+        const textY = cy + r * 0.5
+        const text = `${err.toFixed(1)} %`
+        ctx.strokeText(text, cx, textY)
+        ctx.fillText(text, cx, textY)
       }
     }
 
     // Crosshairs
-    ctx.strokeStyle = "#4a4a6e"
-    ctx.lineWidth = 0.5
+    ctx.strokeStyle = "#aaaaaa"
+    ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy)
-    ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r)
+    ctx.moveTo(cx - r, cy)
+    ctx.lineTo(cx + r, cy)
+    ctx.closePath()
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(cx, cy - r)
+    ctx.lineTo(cx, cy + r)
+    ctx.closePath()
     ctx.stroke()
 
-    // Zoom center ring
+    // Zoom center ring at 50% radius
     if (zoomCenter) {
-      ctx.strokeStyle = "#5a5a7e"
-      ctx.lineWidth = 0.5
+      ctx.strokeStyle = "#d3d3d3"
+      ctx.lineWidth = 1
       ctx.beginPath()
       ctx.arc(cx, cy, r * 0.5, 0, 2 * Math.PI)
       ctx.stroke()
     }
 
-    // Stick position
+    // Transform stick position
     let dx = x, dy = y
     if (zoomCenter) {
       const z = applyCenterZoom(x, y)
-      dx = z.x; dy = z.y
+      dx = z.x
+      dy = z.y
     }
 
-    // Line from center to dot
-    ctx.strokeStyle = "#6366f1"
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.moveTo(cx, cy)
-    ctx.lineTo(cx + dx * r, cy + dy * r)
-    ctx.stroke()
+    // Line from center to stick position (variable thickness in zoom mode)
+    ctx.fillStyle = "#000000"
+    ctx.strokeStyle = "#000000"
 
-    // Dot at position
-    ctx.fillStyle = "#818cf8"
+    const stickDist = Math.sqrt(dx * dx + dy * dy)
+    const boundaryRadius = 0.5
+    const useTwoSegments = zoomCenter && stickDist > boundaryRadius
+
+    if (useTwoSegments) {
+      const bx = (dx / stickDist) * boundaryRadius
+      const by = (dy / stickDist) * boundaryRadius
+      // Thick inner segment
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(cx, cy)
+      ctx.lineTo(cx + bx * r, cy + by * r)
+      ctx.stroke()
+      // Thin outer segment
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(cx + bx * r, cy + by * r)
+      ctx.lineTo(cx + dx * r, cy + dy * r)
+      ctx.stroke()
+    } else {
+      ctx.lineWidth = zoomCenter ? 3 : 1
+      ctx.beginPath()
+      ctx.moveTo(cx, cy)
+      ctx.lineTo(cx + dx * r, cy + dy * r)
+      ctx.stroke()
+    }
+
+    // Filled dot at stick position
     ctx.beginPath()
-    ctx.arc(cx + dx * r, cy + dy * r, 4, 0, 2 * Math.PI)
+    ctx.arc(cx + dx * r, cy + dy * r, 3, 0, 2 * Math.PI)
+    ctx.fillStyle = "#030b84"
     ctx.fill()
 
-    // Label
-    ctx.fillStyle = "#a0a0c0"
-    ctx.font = "11px sans-serif"
+    // Label underneath
+    ctx.fillStyle = "#666666"
+    ctx.font = "11px Arial"
     ctx.textAlign = "center"
-    ctx.fillText(label, cx, size - 2)
+    ctx.textBaseline = "top"
+    ctx.fillText(label, cx, size - 6)
   }, [x, y, circularityData, size, zoomCenter, label])
 
   return (
     <canvas
       ref={canvasRef}
       style={{ width: size, height: size }}
-      className="rounded-lg"
+      className="rounded"
     />
   )
 }
